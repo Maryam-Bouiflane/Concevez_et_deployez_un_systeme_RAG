@@ -1,0 +1,44 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.coverage.*
+
+# Build / packaging
+build/
+dist/
+wheels/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment configuration
+.env
+.env.*
+
+# IDE / editors
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Project-generated data
+data/faiss_index.bin
+data/metadata.json
+
+# Logs
+*.log

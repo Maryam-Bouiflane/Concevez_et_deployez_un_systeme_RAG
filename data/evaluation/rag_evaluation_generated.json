@@ -1,0 +1,102 @@
+[
+  {
+    "user_input": "Quels événements sont organisés à Paris ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; Forum Deeptech 2026 (18/03/2026, Centre de conférence Pierre Mendès France, Ministère de l'Economie, 139 rue de Bercy 75012) ; La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont prévus prochainement à Paris ?",
+    "reference": "MINUIT SOLEIL (18/11/2026, La Manufacture Chanson, 124 avenue de la république 75011 paris) ; Duo show Rayane Mcirdi et Chloé Quenum (titre à venir) (24/09/2026, Frac Île-de-France, Le Plateau, 22 rue des Alouettes, 75019 Paris) ; Patrimoine bâti en péril (19/09/2026, Mairie Paris 7, 116 rue de Grenelle Paris 75007)"
+  },
+  {
+    "user_input": "Quels événements sont prévus demain à Paris ?",
+    "reference": "Villette Tropicale spécial été '26 I Live & Djs (15/08/2026, LA PETITE HALLE, 211 avenue Jean Jaures, 75019 Paris) ; Paris sous les étoiles - Square Louis XIII (Paris 4) (15/08/2026, Square Louis XIII - Place des Vosges, Pl. des Vosges, 75004 Paris)"
+  },
+  {
+    "user_input": "Quels événements auront lieu dans 2 jours à Paris ?",
+    "reference": "UN GRAND RACCOURCI · Présenté par l'équipe du film (16/08/2026, Maison de la culture du Japon à Paris, 101 bis Quai Jacques Chirac, Paris 15e Arrondissement) ; La Shattarena #8 - Summer edition free open air sur Seine ! (16/08/2026, Le Barapapa, 11 port de la Râpée)"
+  },
+  {
+    "user_input": "Quels événements ont lieu cette semaine à Paris ?",
+    "reference": "FRANCAIS ET ANGLAIS OBLIGATOIRE - Recrutement CITYONE d'Agent Welcome, temps partiel 30h (10/08/2026, Paris - Agence AEROPORTUAIRE ROISSY CDG, 75017 Paris) ; JobDating - Cuisinier (ère) passioné(e) - Café Ighouraf Paris 20ème (11/08/2026, Agence Paris 20eme Vitruve, 75020 Paris) ; Éclipse de Soleil - Nuit des étoiles (12/08/2026, Cité des sciences et de l'Industrie, 30 avenue Corentin Cariou, 75019 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont prévus la semaine prochaine à Paris ?",
+    "reference": "Paris sous les étoiles - Square Georges Méliès (Paris 12) (22/08/2026, Square George Méliès, Avenue Emile Laurent 75012 Paris) ; FRANCAIS ET ANGLAIS OBLIGATOIRE - Recrutement CITYONE d'Agent Welcome, temps partiel 30h (17/08/2026, Paris - Agence AEROPORTUAIRE ROISSY CDG, 75017 Paris) ; Apec Nouveaux Horizons (17/08/2026, Paris - Agence Antony, 75014 Paris)"
+  },
+  {
+    "user_input": "Quels événements ont lieu ce week-end à Paris ?",
+    "reference": "Villette Tropicale spécial été '26 I Live & Djs (15/08/2026, LA PETITE HALLE, 211 avenue Jean Jaures, 75019 Paris) ; UN GRAND RACCOURCI · Présenté par l'équipe du film (16/08/2026, Maison de la culture du Japon à Paris, 101 bis Quai Jacques Chirac, Paris 15e Arrondissement) ; Paris sous les étoiles - Square Louis XIII (Paris 4) (15/08/2026, Square Louis XIII - Place des Vosges, Pl. des Vosges, 75004 Paris)"
+  },
+  {
+    "user_input": "Quels événements ont lieu à Paris en août ?",
+    "reference": "FRANCAIS ET ANGLAIS OBLIGATOIRE - Recrutement CITYONE d'Agent Welcome, temps partiel 30h (10/08/2026, Paris - Agence AEROPORTUAIRE ROISSY CDG, 75017 Paris) ; JobDating - Cuisinier (ère) passioné(e) - Café Ighouraf Paris 20ème (11/08/2026, Agence Paris 20eme Vitruve, 75020 Paris) ; Devenez moniteur d'auto-école en alternance ! (06/08/2026, Paris - Agence Vitry-sur-Seine, 75013 Paris)"
+  },
+  {
+    "user_input": "Y a-t-il des concerts à Paris ?",
+    "reference": "Atelier podcast culturel (04/10/2025, Bibliothèque François Villon, 81 Boulevard de la Villette, 75010 Paris, France) ; Spectacle « La Pie niche NiÔNiba » Par la compagnie Miss O’Youk (04/10/2025, Bibliothèque Astrid Lindgren, 42 Rue Petit, 75019 Paris, France) ; Journées du Matrimoine 2025 - Productrices, compositrices, ingénieures, pionnières : ré-écrire la bande-son de l’histoire (20/09/2025, FGO-Barbara, 1 rue Fleury 75018 Paris)"
+  },
+  {
+    "user_input": "Quels spectacles sont proposés à Paris ?",
+    "reference": "La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris) ; Spectacle « La Pie niche NiÔNiba » Par la compagnie Miss O’Youk (04/10/2025, Bibliothèque Astrid Lindgren, 42 Rue Petit, 75019 Paris, France) ; Opportunité d'emploi: Et si vous deveniez technicien(ne) de scène dans le spectacle vivant ! (03/09/2025, Agence Paris 20eme Vitruve, 75020 Paris)"
+  },
+  {
+    "user_input": "Quels événements culturels sont proposés à Paris ?",
+    "reference": "La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris) ; Atelier podcast culturel (04/10/2025, Bibliothèque François Villon, 81 Boulevard de la Villette, 75010 Paris, France) ; Spectacle « La Pie niche NiÔNiba » Par la compagnie Miss O’Youk (04/10/2025, Bibliothèque Astrid Lindgren, 42 Rue Petit, 75019 Paris, France)"
+  },
+  {
+    "user_input": "Quels événements sportifs sont proposés à Paris ?",
+    "reference": "Opportunité d'emploi: Et si vous deveniez technicien(ne) de scène dans le spectacle vivant ! (03/09/2025, Agence Paris 20eme Vitruve, 75020 Paris) ; Parcours ludique à l'École militaire de Paris 75007 (20/09/2025, École militaire, 1 place Joffre 75007 Paris) ; Entrepreneuriat & Sport : comment construire le sport de demain ? (26/03/2026, Sorbonne, 17 rue de la Sorbonne 75005 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont adaptés aux enfants à Paris ?",
+    "reference": "La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris) ; Atelier : découvrir le cycle de la lune et ses mystères (04/10/2025, Bibliothèque Valeyre, 24 Rue Marguerite de Rochechouart, 75009 Paris, France) ; Spectacle « La Pie niche NiÔNiba » Par la compagnie Miss O’Youk (04/10/2025, Bibliothèque Astrid Lindgren, 42 Rue Petit, 75019 Paris, France)"
+  },
+  {
+    "user_input": "Quels événements gratuits sont proposés à Paris ?",
+    "reference": "Atelier podcast culturel (04/10/2025, Bibliothèque François Villon, 81 Boulevard de la Villette, 75010 Paris, France) ; Spectacle « La Pie niche NiÔNiba » Par la compagnie Miss O’Youk (04/10/2025, Bibliothèque Astrid Lindgren, 42 Rue Petit, 75019 Paris, France) ; Découverte des métiers de la restauration - spécialité « Peinture » (20/09/2025, INHA - Institut national d'histoire de l'art (galerie Colbert), 2 rue Vivienne 75002 Paris)"
+  },
+  {
+    "user_input": "Que peux-tu me dire sur l'événement « SAVE THE DATE - Thème IA & Santé » ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt)"
+  },
+  {
+    "user_input": "À quelle date a lieu « Forum Deeptech 2026 » ?",
+    "reference": "Forum Deeptech 2026 (18/03/2026, Centre de conférence Pierre Mendès France, Ministère de l'Economie, 139 rue de Bercy 75012)"
+  },
+  {
+    "user_input": "Où a lieu « La Tempête, William Shakespeare » ?",
+    "reference": "La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris)"
+  },
+  {
+    "user_input": "Quels événements ont lieu dans le quartier Quartier des Champs-Élysées à Paris ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; 2026-the-ultimate-user-experience (22/01/2026, HEC Alumni, 9 avenue Franklin Roosevelt 75008 Paris) ; Droit de l’IA et stratégie juridique de gouvernance pour les entreprises (25/09/2025, HEC Alumni, 9 avenue Franklin Roosevelt 75008 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont organisés dans le 75008 ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; Visite guidée de l'église Saint-Philippe-du-Roule (20/09/2025, Église Saint-Philippe-du-Roule, 154 Rue du Faubourg Saint-Honoré, 75008 Paris, France) ; Lancez Votre Micro-Entreprise avec Lulu dans ma Rue : Opportunités et Accompagnement ! (29/09/2025, Agence Paris 7 8 9eme St Petersbourg, 75008 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont proposés en Île-de-France ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; Forum Deeptech 2026 (18/03/2026, Centre de conférence Pierre Mendès France, Ministère de l'Economie, 139 rue de Bercy 75012) ; La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris)"
+  },
+  {
+    "user_input": "Quels événements sont organisés en France (Métropole) ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; Forum Deeptech 2026 (18/03/2026, Centre de conférence Pierre Mendès France, Ministère de l'Economie, 139 rue de Bercy 75012) ; La Tempête, William Shakespeare (05/07/2025, Théâtre de Verdure du jardin Shakespeare, Allée de la Reine Marguerite, route de Suresnes 75016 Paris)"
+  },
+  {
+    "user_input": "À quelle adresse a lieu « SAVE THE DATE - Thème IA & Santé » ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt)"
+  },
+  {
+    "user_input": "Quels événements liés à ['HEC Alumni - Hub Digital' sont proposés à Paris ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt) ; LE FUTUR DU TRAVAIL EN 2026 (26/11/2025, HEC Alumni, 9, avenue Franklin Delano Roosevelt)"
+  },
+  {
+    "user_input": "Peux-tu me recommander un événement intéressant à Paris ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt)"
+  },
+  {
+    "user_input": "Que peut-on faire prochainement à Paris ?",
+    "reference": "SAVE THE DATE - Thème IA & Santé (12/03/2026, HEC Alumni, 9, avenue Franklin Delano Roosevelt)"
+  }
+]
