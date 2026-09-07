@@ -3,32 +3,40 @@
 from __future__ import annotations
 
 import json
-from datetime import date
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
 import faiss
 import numpy as np
 
 from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
 from mistralai.client import Mistral
 
 from app.config import (
     INDEX_PATH,
     METADATA_PATH,
     MISTRAL_API_KEY,
-    SIMILARITY_THRESHOLD,
-    TOP_K,
 )
-from app.schemas.search import EventSearchFilters
-
-
-if TYPE_CHECKING:
-    from app.core.query_parser import EventQueryParser
 
 
 class EventRAGIndex:
-    """Gère la vectorisation et la recherche sémantique des événements."""
+    """
+    Gère la vectorisation et le stockage des événements.
+
+    Responsabilités :
+
+        événements
+            ↓
+        Documents LangChain
+            ↓
+        embeddings Mistral
+            ↓
+        index FAISS
+            ↓
+        sauvegarde / chargement
+
+    La logique de recherche et de filtrage est gérée
+    par EventRetriever.
+    """
 
     def __init__(
         self,
@@ -47,14 +55,14 @@ class EventRAGIndex:
             api_key=MISTRAL_API_KEY,
         )
 
-        # Index FAISS contenant les embeddings.
-        self.index: faiss.Index | None = None
-
-        # Documents correspondant aux vecteurs FAISS.
+        # Index FAISS.
         #
         # IMPORTANT :
         # self.documents[i] correspond toujours au vecteur
         # FAISS d'indice i.
+        self.index: faiss.Index | None = None
+
+        # Documents correspondant aux vecteurs FAISS.
         self.documents: list[Document] = []
 
         self.metadata_path = METADATA_PATH
@@ -68,7 +76,9 @@ class EventRAGIndex:
         self,
         events: list[dict[str, Any]],
     ) -> list[Document]:
-        """Construit les Documents LangChain à partir des événements."""
+        """
+        Construit les Documents LangChain à partir des événements.
+        """
 
         documents: list[Document] = []
 
@@ -176,7 +186,7 @@ class EventRAGIndex:
         self,
         events: list[dict[str, Any]],
     ) -> None:
-        """Crée l'index FAISS et sauvegarde les événements associés."""
+        """Crée l'index FAISS et sauvegarde les documents associés."""
 
         self.documents = self._build_documents(events)
 
@@ -248,19 +258,13 @@ class EventRAGIndex:
 
         events_to_save = [
             {
-                "uid": document.metadata.get(
-                    "uid"
-                ),
+                "uid": document.metadata.get("uid"),
                 "canonicalurl": document.metadata.get(
                     "canonicalurl"
                 ),
-                "slug": document.metadata.get(
-                    "slug"
-                ),
+                "slug": document.metadata.get("slug"),
                 "text": document.page_content,
-                "title_fr": document.metadata.get(
-                    "title"
-                ),
+                "title_fr": document.metadata.get("title"),
                 "firstdate_begin": document.metadata.get(
                     "date_start"
                 ),
@@ -291,9 +295,7 @@ class EventRAGIndex:
                 "location_countrycode": document.metadata.get(
                     "location_countrycode"
                 ),
-                "country_fr": document.metadata.get(
-                    "country"
-                ),
+                "country_fr": document.metadata.get("country"),
                 "location_coordinates.lon": (
                     document.metadata
                     .get(
@@ -363,194 +365,17 @@ class EventRAGIndex:
             )
 
     # ==================================================================
-    # METADATA FILTERING
+    # QUERY EMBEDDING
     # ==================================================================
 
-    @staticmethod
-    def _normalize_value(
-        value: Any,
-    ) -> str | None:
-        """Normalise une valeur metadata pour les comparaisons."""
-
-        if value is None:
-            return None
-
-        value = str(value).strip()
-
-        if not value:
-            return None
-
-        return value.casefold()
-
-    @staticmethod
-    def _parse_event_date(
-        value: Any,
-    ) -> date | None:
-        """
-        Convertit une date OpenAgenda en objet date.
-
-        Accepte notamment :
-        - YYYY-MM-DD
-        - YYYY-MM-DDTHH:MM:SS
-        - YYYY-MM-DDTHH:MM:SS+00:00
-        """
-
-        if value is None:
-            return None
-
-        if isinstance(value, date):
-            return value
-
-        value_str = str(value).strip()
-
-        if not value_str:
-            return None
-
-        try:
-            return date.fromisoformat(
-                value_str[:10]
-            )
-        except ValueError:
-            return None
-
-    @classmethod
-    def _event_matches_filters(
-        cls,
-        document: Document,
-        filters: EventSearchFilters,
-    ) -> bool:
-        """
-        Vérifie si un document respecte tous les filtres metadata.
-
-        Les différents filtres sont combinés avec AND.
-        """
-
-        metadata = document.metadata
-
-        # --------------------------------------------------------------
-        # DATE
-        # --------------------------------------------------------------
-
-        if (
-            filters.date_from is not None
-            or filters.date_to is not None
-        ):
-            event_start = cls._parse_event_date(
-                metadata.get("date_start")
-            )
-
-            event_end = cls._parse_event_date(
-                metadata.get("date_end")
-            )
-
-            # Si aucune date exploitable n'est disponible,
-            # l'événement ne peut pas satisfaire une contrainte
-            # temporelle.
-            if event_start is None:
-                return False
-
-            # Un événement ponctuel n'ayant pas de date_end
-            # est considéré comme ayant lieu à date_start.
-            if event_end is None:
-                event_end = event_start
-
-            filter_start = filters.date_from
-            filter_end = filters.date_to
-
-            # Une seule borne peut être présente.
-            if filter_start is not None:
-                if event_end < filter_start:
-                    return False
-
-            if filter_end is not None:
-                if event_start > filter_end:
-                    return False
-
-        # --------------------------------------------------------------
-        # GEOGRAPHIE
-        # --------------------------------------------------------------
-
-        metadata_filters = {
-            "location_city": filters.location_city,
-            "location_district": filters.location_district,
-            "location_postalcode": filters.location_postalcode,
-            "location_department": filters.location_department,
-            "location_region": filters.location_region,
-            "location_countrycode": filters.location_countrycode,
-            "country": filters.country_fr,
-        }
-
-        for metadata_key, filter_value in metadata_filters.items():
-            if filter_value is None:
-                continue
-
-            document_value = cls._normalize_value(
-                metadata.get(metadata_key)
-            )
-
-            expected_value = cls._normalize_value(
-                filter_value
-            )
-
-            if document_value != expected_value:
-                return False
-
-        return True
-
-    def _get_matching_document_indices(
-        self,
-        filters: EventSearchFilters,
-    ) -> list[int]:
-        """Retourne les indices FAISS des documents compatibles."""
-
-        return [
-            index
-            for index, document in enumerate(
-                self.documents
-            )
-            if self._event_matches_filters(
-                document,
-                filters,
-            )
-        ]
-
-    # ==================================================================
-    # SEARCH
-    # ==================================================================
-
-    def search(
+    def create_query_embedding(
         self,
         query: str,
-        top_k: int = TOP_K,
-        threshold: float = SIMILARITY_THRESHOLD,
-        filters: EventSearchFilters | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> np.ndarray:
         """
-        Recherche les événements les plus proches.
+        Crée l'embedding d'une requête.
 
-        Pipeline :
-
-            filters metadata
-                    ↓
-            candidats compatibles
-                    ↓
-            embedding de la question complète
-                    ↓
-            FAISS
-                    ↓
-            threshold
-                    ↓
-            top_k
-
-        Si filters est None ou vide :
-
-            question complète
-                    ↓
-                  FAISS
-                    ↓
-                threshold
-                    ↓
-                  top_k
+        Cette méthode est utilisée par le Retriever.
         """
 
         if not query.strip():
@@ -558,253 +383,46 @@ class EventRAGIndex:
                 "La requête de recherche ne peut pas être vide."
             )
 
-        if top_k <= 0:
-            raise ValueError(
-                "top_k doit être supérieur à zéro."
+        embedding = self._create_embeddings(
+            [query]
+        )
+
+        if (
+            embedding.ndim != 2
+            or embedding.shape[0] == 0
+        ):
+            raise RuntimeError(
+                "Aucun embedding valide n'a été généré "
+                "pour la requête."
             )
 
-        if self.index is None:
-            self.load()
+        return embedding
+
+    # ==================================================================
+    # VECTOR ACCESS
+    # ==================================================================
+
+    def get_embedding(
+        self,
+        index: int,
+    ) -> np.ndarray:
+        """
+        Retourne le vecteur FAISS correspondant à un document.
+
+        Le Retriever utilise cette méthode pour reconstruire
+        un index FAISS temporaire après filtrage metadata.
+        """
 
         if self.index is None:
             raise RuntimeError(
                 "L'index FAISS n'est pas disponible."
             )
 
-        if self.index.ntotal == 0:
-            return []
-
-        # --------------------------------------------------------------
-        # 1. Déterminer les candidats metadata
-        # --------------------------------------------------------------
-
-        candidate_indices: list[int] | None = None
-
-        if filters is not None:
-            candidate_indices = (
-                self._get_matching_document_indices(
-                    filters
-                )
+        if index < 0 or index >= self.index.ntotal:
+            raise IndexError(
+                f"Indice FAISS invalide : {index}"
             )
 
-            # Aucun document ne respecte les filtres.
-            if not candidate_indices:
-                return []
-
-        # --------------------------------------------------------------
-        # 2. Embedding de la QUESTION COMPLÈTE
-        # --------------------------------------------------------------
-
-        embedding = self._create_embeddings(
-            [query]
-        )
-
-        if embedding.shape[0] == 0:
-            return []
-
-        # --------------------------------------------------------------
-        # 3. Recherche FAISS
-        # --------------------------------------------------------------
-
-        # --------------------------------------------------------------
-        # Cas 1 : aucun filtre metadata.
-        #
-        # On interroge directement l'index FAISS complet.
-        # --------------------------------------------------------------
-
-        if candidate_indices is None:
-            search_k = min(
-                top_k,
-                self.index.ntotal,
-            )
-
-            if search_k == 0:
-                return []
-
-            scores, indices = self.index.search(
-                embedding,
-                search_k,
-            )
-
-            results: list[dict[str, Any]] = []
-
-            for score, index in zip(
-                scores[0],
-                indices[0],
-            ):
-                if index < 0:
-                    continue
-
-                similarity = float(score)
-
-                if similarity < threshold:
-                    continue
-
-                document = self.documents[
-                    int(index)
-                ]
-
-                results.append(
-                    {
-                        "score": similarity,
-                        "document": document,
-                    }
-                )
-
-            return results
-
-        # --------------------------------------------------------------
-        # Cas 2 : filtres metadata.
-        #
-        # FAISS ne sait pas directement filtrer les metadata
-        # de nos Documents.
-        #
-        # On reconstruit donc un petit index FAISS temporaire
-        # uniquement avec les vecteurs des candidats compatibles.
-        # --------------------------------------------------------------
-
-        candidate_embeddings = np.asarray(
-            [
-                self.index.reconstruct(
-                    int(index)
-                )
-                for index in candidate_indices
-            ],
-            dtype="float32",
-        )
-
-        if candidate_embeddings.ndim != 2:
-            return []
-
-        if candidate_embeddings.shape[0] == 0:
-            return []
-
-        filtered_index = faiss.IndexFlatIP(
-            candidate_embeddings.shape[1]
-        )
-
-        filtered_index.add(
-            candidate_embeddings
-        )
-
-        search_k = min(
-            top_k,
-            len(candidate_indices),
-        )
-
-        scores, local_indices = filtered_index.search(
-            embedding,
-            search_k,
-        )
-
-        results = []
-
-        for score, local_index in zip(
-            scores[0],
-            local_indices[0],
-        ):
-            if local_index < 0:
-                continue
-
-            similarity = float(score)
-
-            if similarity < threshold:
-                continue
-
-            original_index = candidate_indices[
-                int(local_index)
-            ]
-
-            document = self.documents[
-                original_index
-            ]
-
-            results.append(
-                {
-                    "score": similarity,
-                    "document": document,
-                }
-            )
-
-        return results
-
-    # ==================================================================
-    # LANGCHAIN RETRIEVER
-    # ==================================================================
-
-    def as_retriever(
-        self,
-        query_parser: EventQueryParser | None = None,
-        top_k: int = TOP_K,
-        threshold: float = SIMILARITY_THRESHOLD,
-    ) -> BaseRetriever:
-        """
-        Expose la recherche comme Retriever LangChain.
-
-        LangChain appelle ce retriever avec la question complète.
-
-        Le retriever :
-
-            question complète
-                    ↓
-            Query Parser
-                    ↓
-            metadata filters
-                    ↓
-            index.search(
-                question complète,
-                filters
-            )
-                    ↓
-            Documents
-        """
-
-        index = self
-
-        class FAISSRetriever(BaseRetriever):
-            top_k: int
-            threshold: float
-            query_parser: Any = None
-
-            def _get_relevant_documents(
-                self,
-                query: str,
-                *,
-                run_manager: Any = None,
-            ) -> list[Document]:
-                """Récupère les documents pertinents."""
-
-                filters: EventSearchFilters | None = None
-
-                # ------------------------------------------------------
-                # Query Parser
-                # ------------------------------------------------------
-
-                if self.query_parser is not None:
-                    parsed_query = (
-                        self.query_parser.parse(query)
-                    )
-
-                    filters = parsed_query.filters
-
-                # ------------------------------------------------------
-                # Recherche
-                # ------------------------------------------------------
-
-                results = index.search(
-                    query=query,
-                    top_k=self.top_k,
-                    threshold=self.threshold,
-                    filters=filters,
-                )
-
-                return [
-                    result["document"]
-                    for result in results
-                ]
-
-        return FAISSRetriever(
-            top_k=top_k,
-            threshold=threshold,
-            query_parser=query_parser,
+        return self.index.reconstruct(
+            int(index)
         )

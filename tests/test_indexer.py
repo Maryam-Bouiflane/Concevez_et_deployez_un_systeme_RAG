@@ -1,10 +1,9 @@
 """Tests unitaires pour l'indexation vectorielle."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from langchain_core.documents import Document
 
 from app.core.indexer import EventRAGIndex
 
@@ -62,13 +61,6 @@ def test_build_documents_creates_expected_metadata():
 def test_create_embeddings_batches_requests():
     indexer = EventRAGIndex()
 
-    response = Mock()
-    response.data = [
-        Mock(embedding=[1.0, 2.0]),
-        Mock(embedding=[3.0, 4.0]),
-        Mock(embedding=[5.0, 6.0]),
-    ]
-
     indexer.client.embeddings.create = Mock(
         side_effect=[
             Mock(
@@ -93,6 +85,18 @@ def test_create_embeddings_batches_requests():
     assert result.dtype == np.float32
     assert result.shape == (3, 2)
 
+    np.testing.assert_array_equal(
+        result,
+        np.array(
+            [
+                [1.0, 2.0],
+                [3.0, 4.0],
+                [5.0, 6.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
     assert indexer.client.embeddings.create.call_count == 2
 
 
@@ -106,38 +110,47 @@ def test_build_index_rejects_empty_documents():
         indexer.build_index([])
 
 
-def test_search_uses_similarity_threshold():
+def test_get_embedding_returns_vector():
     indexer = EventRAGIndex()
 
     indexer.index = Mock()
     indexer.index.ntotal = 2
-    
-    indexer.index.search.return_value = (
-        np.array([[0.9, 0.3]], dtype=np.float32),
-        np.array([[0, 1]], dtype=np.int64),
+
+    indexer.index.reconstruct.return_value = np.array(
+        [1.0, 2.0],
+        dtype=np.float32,
     )
 
-    indexer.documents = [
-        Document(page_content="Concert à Paris"),
-        Document(page_content="Événement éloigné"),
-    ]
+    result = indexer.get_embedding(0)
 
-    indexer._create_embeddings = Mock(
-        return_value=np.array(
-            [[1.0, 0.0]],
+    assert result.dtype == np.float32
+
+    np.testing.assert_array_equal(
+        result,
+        np.array(
+            [1.0, 2.0],
             dtype=np.float32,
-        )
+        ),
     )
 
-    results = indexer.search(
-        "concert",
-        top_k=2,
-        threshold=0.45,
-    )
+    indexer.index.reconstruct.assert_called_once_with(0)
 
-    assert len(results) == 1
-    assert results[0]["score"] == pytest.approx(0.9)
-    assert (
-        results[0]["document"].page_content
-        == "Concert à Paris"
-    )
+
+def test_get_embedding_rejects_negative_index():
+    indexer = EventRAGIndex()
+
+    indexer.index = Mock()
+    indexer.index.ntotal = 2
+
+    with pytest.raises(IndexError):
+        indexer.get_embedding(-1)
+
+
+def test_get_embedding_rejects_index_out_of_range():
+    indexer = EventRAGIndex()
+
+    indexer.index = Mock()
+    indexer.index.ntotal = 2
+
+    with pytest.raises(IndexError):
+        indexer.get_embedding(2)

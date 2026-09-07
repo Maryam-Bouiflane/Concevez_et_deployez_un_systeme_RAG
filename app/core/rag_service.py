@@ -21,6 +21,7 @@ from app.config import (
 from app.core.data_loader import fetch_events_from_openagenda
 from app.core.indexer import EventRAGIndex
 from app.core.query_parser import EventQueryParser
+from app.core.retriever import EventRetriever
 
 
 MISTRAL_LLM_MODEL = "mistral-small-latest"
@@ -28,64 +29,58 @@ MISTRAL_LLM_MODEL = "mistral-small-latest"
 
 class EventRAGService:
     """
-    Service RAG principal.
+    Service principal du système RAG.
 
-    Pipeline :
+    Responsabilités :
 
-        Question utilisateur
-                │
-                ▼
-          Query Parser
-                │
-                ▼
-        Metadata filters
-                │
-                ▼
-      Pré-filtrage metadata
-                │
-                ▼
-       FAISS avec la question
-          complète
-                │
-                ▼
-            threshold
-                │
-                ▼
-              top_k
-                │
-                ▼
-            Documents
-                │
-                ▼
-              Mistral
-                │
-                ▼
-             Réponse
+        - initialiser les composants ;
+        - construire / charger l'index ;
+        - assembler le Retriever et la chaîne RAG ;
+        - lancer la génération de réponse.
+
+    Le service ne réalise pas directement :
+
+        - le parsing de la question ;
+        - le filtrage metadata ;
+        - la recherche FAISS.
+
+    Ces responsabilités appartiennent au Retriever.
     """
 
     def __init__(self) -> None:
         """Initialise le pipeline RAG."""
 
+        if not MISTRAL_API_KEY:
+            raise RuntimeError(
+                "La clé MISTRAL_API_KEY n'est pas configurée."
+            )
+
+        # --------------------------------------------------------------
+        # Index
+        # --------------------------------------------------------------
+
         self.index = EventRAGIndex()
 
-        self.llm = None
-        self.query_parser = None
-        self.retriever = None
-        self.rag_chain = None
-        self._document_chain = None
-
         # --------------------------------------------------------------
-        # LLM Mistral
+        # LLM
         # --------------------------------------------------------------
 
-        if MISTRAL_API_KEY:
-            self.llm = ChatOpenAI(
-                model=MISTRAL_LLM_MODEL,
-                api_key=MISTRAL_API_KEY,
-                base_url="https://api.mistral.ai/v1",
-                temperature=0.0,
-                max_tokens=2048,
-            )
+        self.llm = ChatOpenAI(
+            model=MISTRAL_LLM_MODEL,
+            api_key=MISTRAL_API_KEY,
+            base_url="https://api.mistral.ai/v1",
+            temperature=0.0,
+            max_tokens=2048,
+        )
+
+        # --------------------------------------------------------------
+        # Composants LangChain
+        # --------------------------------------------------------------
+
+        self.query_parser: EventQueryParser | None = None
+        self.retriever: EventRetriever | None = None
+        self.rag_chain: Any = None
+        self._document_chain: Any = None
 
         self._build_langchain_components()
 
@@ -95,9 +90,6 @@ class EventRAGService:
 
     def _build_langchain_components(self) -> None:
         """Construit les composants LangChain."""
-
-        if self.llm is None:
-            return
 
         # --------------------------------------------------------------
         # Query Parser
@@ -148,12 +140,10 @@ Contexte :
             ]
         )
 
-        self._document_chain = (
-            create_stuff_documents_chain(
-                self.llm,
-                prompt,
-                output_parser=StrOutputParser(),
-            )
+        self._document_chain = create_stuff_documents_chain(
+            self.llm,
+            prompt,
+            output_parser=StrOutputParser(),
         )
 
     # ==================================================================
@@ -233,7 +223,6 @@ Contexte :
 
         print("================================\n")
 
-        # Le retriever utilise le nouvel index.
         self._create_retriever()
 
     def _ensure_index_loaded(self) -> None:
@@ -244,7 +233,9 @@ Contexte :
         # --------------------------------------------------------------
 
         if self.index.index is not None:
-            self._create_retriever()
+            if self.retriever is None:
+                self._create_retriever()
+
             return
 
         # --------------------------------------------------------------
@@ -299,21 +290,29 @@ Contexte :
     # ==================================================================
 
     def _create_retriever(self) -> None:
-        """Crée le retriever LangChain."""
+        """Crée le Retriever LangChain."""
 
-        self.retriever = self.index.as_retriever(
+        if self.query_parser is None:
+            raise RuntimeError(
+                "Le Query Parser n'est pas initialisé."
+            )
+
+        self.retriever = EventRetriever(
+            index=self.index,
             query_parser=self.query_parser,
             top_k=TOP_K,
             threshold=SIMILARITY_THRESHOLD,
         )
 
-        if self._document_chain is not None:
-            self.rag_chain = (
-                create_retrieval_chain(
-                    self.retriever,
-                    self._document_chain,
-                )
+        if self._document_chain is None:
+            raise RuntimeError(
+                "La chaîne de documents n'est pas initialisée."
             )
+
+        self.rag_chain = create_retrieval_chain(
+            self.retriever,
+            self._document_chain,
+        )
 
     # ==================================================================
     # ANSWER
@@ -326,11 +325,23 @@ Contexte :
         """
         Répond à une question avec le pipeline RAG.
 
-        La question originale complète est conservée
-        pour la recherche sémantique FAISS.
+        La question complète est envoyée au Retriever.
 
-        Le Query Parser extrait uniquement les filtres
-        metadata.
+        Le Retriever se charge ensuite de :
+
+            question
+                ↓
+            Query Parser
+                ↓
+            metadata filters
+                ↓
+            FAISS
+                ↓
+            threshold
+                ↓
+            top_k
+
+        Le service ne réalise aucun retrieval directement.
         """
 
         if not question.strip():
@@ -361,64 +372,16 @@ Contexte :
         )
 
         # --------------------------------------------------------------
-        # 2. Mistral / LangChain indisponible
+        # 2. Vérification de la chaîne RAG
         # --------------------------------------------------------------
 
-        if (
-            self.llm is None
-            or self.rag_chain is None
-        ):
-            print(
-                "[2/2] Génération Mistral : "
-                "NON DISPONIBLE"
+        if self.rag_chain is None:
+            raise RuntimeError(
+                "La chaîne RAG n'est pas disponible."
             )
-
-            # Le Query Parser peut néanmoins être utilisé
-            # indépendamment de la génération.
-            filters = None
-
-            if self.query_parser is not None:
-                parsed_query = (
-                    self.query_parser.parse(
-                        question
-                    )
-                )
-
-                filters = parsed_query.filters
-
-            # IMPORTANT :
-            # on envoie toujours la QUESTION COMPLÈTE
-            # à FAISS.
-            results = self.index.search(
-                query=question,
-                top_k=TOP_K,
-                threshold=SIMILARITY_THRESHOLD,
-                filters=filters,
-            )
-
-            total_time = (
-                time.perf_counter()
-                - total_start
-            )
-
-            print(
-                f"TOTAL ASK                     : "
-                f"{total_time:.2f} s"
-            )
-
-            print("=============================\n")
-
-            return {
-                "answer": (
-                    "La génération de réponse avec Mistral "
-                    "n'est pas disponible."
-                ),
-                "context": results,
-                "used_mistral": False,
-            }
 
         # --------------------------------------------------------------
-        # 3. Pipeline LangChain complet
+        # 3. Pipeline RAG complet
         # --------------------------------------------------------------
 
         mistral_start = time.perf_counter()
@@ -438,11 +401,9 @@ Contexte :
         # 4. Documents récupérés
         # --------------------------------------------------------------
 
-        retrieved_documents = (
-            chain_result.get(
-                "context",
-                [],
-            )
+        retrieved_documents = chain_result.get(
+            "context",
+            [],
         )
 
         context_results: list[

@@ -1,0 +1,50 @@
+# Environnement virtuel
+.venv/
+venv/
+env/
+
+# Variables d'environnement / secrets
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Tests / couverture
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Fichiers temporaires
+*.log
+*.tmp
+*.temp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation / fichiers inutiles dans l'image
+*.md
+
+<!-- # Données d'évaluation -->
+<!-- data/evaluation/ -->
+
+# Fichiers de développement
+notebooks/

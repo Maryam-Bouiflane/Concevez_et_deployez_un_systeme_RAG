@@ -1,3 +1,5 @@
+"""Analyse les questions utilisateur et extrait les filtres metadata."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,14 +8,17 @@ from zoneinfo import ZoneInfo
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
-from app.schemas.search import EventSearchFilters, EventSearchQuery
+from app.schemas.search import EventSearchQuery
 
 
 PARIS_TZ = ZoneInfo("Europe/Paris")
 
 
 class EventQueryParser:
-    """Extrait les contraintes metadata d'une question utilisateur."""
+    """
+    Extrait uniquement les contraintes metadata
+    d'une question utilisateur.
+    """
 
     def __init__(
         self,
@@ -103,20 +108,6 @@ IMPORTANT POUR "CE WEEK-END" :
 "ce week-end" désigne le samedi et le dimanche
 qui suivent ou correspondent à la semaine actuelle.
 
-Exemple de référence uniquement :
-si aujourd'hui est vendredi 14 août 2026,
-
-alors :
-
-ce week-end
-→ samedi 15 août 2026
-→ dimanche 16 août 2026
-
-Donc :
-
-date_from = 2026-08-15
-date_to = 2026-08-16
-
 Ne mets jamais le lundi suivant dans "ce week-end".
 
 Pour "la semaine prochaine" :
@@ -163,19 +154,7 @@ DOIT produire :
 
 location_city = "Paris"
 
-ET :
-
-location_district = null
-location_postalcode = null
-location_department = null
-location_region = null
-location_countrycode = null
-country_fr = null
-
-Même si tu sais que Paris correspond
-au département 75, à l'Île-de-France
-et à la France, tu ne dois PAS renseigner
-ces informations.
+ET tous les autres champs géographiques = null.
 
 Autre exemple :
 
@@ -231,15 +210,6 @@ Si plusieurs informations géographiques sont
 explicitement présentes, renseigne les champs
 correspondants.
 
-Exemple :
-
-"à Paris dans le 15e arrondissement"
-
-→ location_city = "Paris"
-→ location_district = "15e"
-
-Tous les autres champs = null.
-
 ──────────────────────────────────────────────
 IMPORTANT : PAS DE SEARCH_QUERY
 ──────────────────────────────────────────────
@@ -253,7 +223,7 @@ pour la recherche vectorielle.
 Ton rôle est uniquement d'extraire les contraintes
 metadata.
 
-Par conséquent, tu dois uniquement identifier :
+Tu dois uniquement identifier :
 
 1. les contraintes temporelles ;
 2. les contraintes géographiques.
@@ -297,6 +267,7 @@ RÈGLES GÉNÉRALES
 
 2. N'ajoute jamais une contrainte qui n'est pas exprimée
 dans la question.
+
 Les expressions temporelles relatives constituent bien
 des contraintes temporelles explicites et doivent être
 converties en dates réelles.
@@ -309,7 +280,6 @@ doivent être null.
 
 5. Ne laisse jamais "demain", "ce week-end",
 "la semaine prochaine", etc. dans les filtres.
-Convertis-les en dates.
 
 6. Les informations temporelles doivent aller
 dans date_from et date_to.
@@ -357,8 +327,8 @@ retourne filters = null.
                 "un EventSearchQuery."
             )
 
-        # Si le LLM retourne un objet EventSearchFilters
-        # entièrement vide, on le transforme en None.
+        # Si le LLM retourne un objet filters vide,
+        # on le transforme en None.
         if result.filters is not None:
             filters_dict = result.filters.model_dump()
 

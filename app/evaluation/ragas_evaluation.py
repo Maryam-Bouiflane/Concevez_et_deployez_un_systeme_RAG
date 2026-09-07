@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 
 from mistralai.client import Mistral
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 from ragas import EvaluationDataset
 from ragas.embeddings.base import BaseRagasEmbedding
 from ragas.llms import llm_factory
@@ -25,6 +25,81 @@ from app.evaluation.dataset import load_evaluation_rows
 
 MISTRAL_LLM_MODEL = "mistral-small-latest"
 MISTRAL_EMBEDDING_MODEL = "mistral-embed"
+
+# ----------------------------------------------------------------------
+# Configuration du rate limiting
+# ----------------------------------------------------------------------
+
+MAX_RETRIES = 5
+
+INITIAL_RETRY_DELAY = 2.0
+
+MAX_RETRY_DELAY = 30.0
+
+# Pause entre deux appels normaux à l'API Mistral.
+REQUEST_DELAY = 2.0
+
+
+T = TypeVar("T")
+
+
+async def _call_with_retry(
+    operation: Callable[[], Awaitable[T]],
+    operation_name: str,
+    max_retries: int = MAX_RETRIES,
+) -> T:
+    """
+    Exécute une opération asynchrone avec retry en cas de rate limit.
+
+    En cas de HTTP 429, le délai augmente progressivement :
+
+        tentative 1 → 2 s
+        tentative 2 → 4 s
+        tentative 3 → 8 s
+        tentative 4 → 16 s
+        tentative 5 → 30 s maximum
+
+    Les autres exceptions sont propagées immédiatement.
+    """
+
+    for attempt in range(max_retries + 1):
+
+        try:
+            return await operation()
+
+        except RateLimitError:
+
+            if attempt >= max_retries:
+                print(
+                    f"[ERREUR] {operation_name} : "
+                    f"limite Mistral toujours atteinte "
+                    f"après {max_retries + 1} tentatives."
+                )
+
+                raise
+
+            delay = min(
+                INITIAL_RETRY_DELAY * (2**attempt),
+                MAX_RETRY_DELAY,
+            )
+
+            print(
+                f"[RATE LIMIT] {operation_name} : "
+                f"HTTP 429."
+            )
+
+            print(
+                f"[RETRY] Nouvelle tentative dans "
+                f"{delay:.0f} s "
+                f"(tentative {attempt + 1}/{max_retries})."
+            )
+
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"L'opération '{operation_name}' "
+        "n'a pas pu être exécutée."
+    )
 
 
 class MistralEmbeddings(BaseRagasEmbedding):
@@ -77,7 +152,8 @@ def _create_mistral_models() -> tuple[Any, MistralEmbeddings]:
             "La clé MISTRAL_API_KEY n'est pas configurée."
         )
 
-    # Client OpenAI-compatible utilisé par Ragas pour le LLM juge.
+    # Client OpenAI-compatible utilisé par Ragas
+    # pour appeler le LLM juge Mistral.
     evaluator_client = AsyncOpenAI(
         api_key=MISTRAL_API_KEY,
         base_url="https://api.mistral.ai/v1",
@@ -96,7 +172,6 @@ def _create_mistral_models() -> tuple[Any, MistralEmbeddings]:
         api_key=MISTRAL_API_KEY,
     )
 
-    # Embeddings Mistral utilisés par les métriques qui en ont besoin.
     evaluator_embeddings = MistralEmbeddings(
         client=mistral_client,
         model=MISTRAL_EMBEDDING_MODEL,
@@ -109,16 +184,24 @@ async def _build_ragas_dataset(
     service: EventRAGService,
 ) -> EvaluationDataset:
     """
-    Exécute le RAG sur chaque question du dataset rag_evaluation.json
-    et construit le dataset utilisé par Ragas.
+    Exécute le RAG sur chaque question du dataset et construit
+    le dataset utilisé par Ragas.
 
-    Le fichier JSON fournit :
-        - user_input
-        - reference
+    Pour chaque question :
 
-    Le système RAG fournit :
-        - response
-        - retrieved_contexts
+        question
+            ↓
+        Query Parser
+            ↓
+        metadata filtering
+            ↓
+        FAISS
+            ↓
+        génération Mistral
+            ↓
+        réponse + contextes
+            ↓
+        dataset Ragas
     """
 
     evaluation_rows = load_evaluation_rows()
@@ -130,36 +213,101 @@ async def _build_ragas_dataset(
 
     ragas_rows: list[dict[str, Any]] = []
 
-    for row in evaluation_rows:
+    total = len(evaluation_rows)
+
+    print(
+        f"\n[DATASET] {total} questions à traiter."
+    )
+
+    for index, row in enumerate(
+        evaluation_rows,
+        start=1,
+    ):
+
         user_input = row.get("user_input")
         reference = row.get("reference")
 
         if not user_input:
             raise ValueError(
-                "Chaque exemple doit contenir 'user_input'."
+                "Chaque exemple doit contenir "
+                "'user_input'."
             )
 
         if not reference:
             raise ValueError(
-                "Chaque exemple doit contenir 'reference'."
+                "Chaque exemple doit contenir "
+                "'reference'."
             )
 
-        # Exécute réellement notre système RAG.
-        result = service.answer(user_input)
+        print(
+            f"\n========== ASK {index}/{total} =========="
+        )
 
-        # Pause pour limiter la fréquence des requêtes vers l'API Mistral.
-        await asyncio.sleep(2)
+        print(
+            f"Question : {user_input}"
+        )
 
-        response = result.get("answer", "")
-        context_results = result.get("context", [])
+        # --------------------------------------------------------------
+        # Exécution du véritable pipeline RAG.
+        # --------------------------------------------------------------
 
-        # Ragas attend une liste de chaînes pour retrieved_contexts.
+        start = time.perf_counter()
+
+        try:
+            result = await _call_with_retry(
+                operation=lambda: asyncio.to_thread(
+                    service.answer,
+                    user_input,
+                ),
+                operation_name=(
+                    f"RAG question {index}/{total}"
+                ),
+            )
+
+        except RateLimitError as exc:
+            raise RuntimeError(
+                "L'API Mistral a atteint sa limite de "
+                "requêtes pendant la construction du "
+                "dataset Ragas."
+            ) from exc
+
+        elapsed = time.perf_counter() - start
+
+        print(
+            f"[OK] Réponse RAG obtenue en "
+            f"{elapsed:.2f} s"
+        )
+
+        # Pause entre deux questions.
+        await asyncio.sleep(
+            REQUEST_DELAY
+        )
+
+        response = result.get(
+            "answer",
+            "",
+        )
+
+        context_results = result.get(
+            "context",
+            [],
+        )
+
+        # Ragas attend une liste de chaînes
+        # pour retrieved_contexts.
         retrieved_contexts = [
             item["document"].page_content
             for item in context_results
-            if isinstance(item, dict)
-            and "document" in item
+            if (
+                isinstance(item, dict)
+                and "document" in item
+            )
         ]
+
+        print(
+            f"[INFO] Contextes récupérés : "
+            f"{len(retrieved_contexts)}"
+        )
 
         ragas_rows.append(
             {
@@ -170,7 +318,48 @@ async def _build_ragas_dataset(
             }
         )
 
-    return EvaluationDataset.from_list(ragas_rows)
+    return EvaluationDataset.from_list(
+        ragas_rows
+    )
+
+
+async def _score_metric(
+    metric: Any,
+    metric_name: str,
+    operation_kwargs: dict[str, Any],
+) -> float:
+    """
+    Calcule une métrique Ragas avec gestion du rate limit.
+    """
+
+    start = time.perf_counter()
+
+    try:
+        result = await _call_with_retry(
+            operation=lambda: metric.ascore(
+                **operation_kwargs
+            ),
+            operation_name=metric_name,
+        )
+
+    except RateLimitError as exc:
+        raise RuntimeError(
+            f"L'API Mistral a atteint sa limite de "
+            f"requêtes pendant le calcul de "
+            f"{metric_name}."
+        ) from exc
+
+    elapsed = time.perf_counter() - start
+
+    score = float(result.value)
+
+    print(
+        f"{metric_name:<20}: "
+        f"{score:.3f} "
+        f"({elapsed:.2f} s)"
+    )
+
+    return score
 
 
 async def run_ragas_evaluation() -> dict[str, Any]:
@@ -178,19 +367,19 @@ async def run_ragas_evaluation() -> dict[str, Any]:
     Exécute l'évaluation complète du système RAG avec Ragas.
 
     Pour chaque question du dataset :
+
         1. Le RAG génère une réponse.
         2. Les contextes récupérés sont enregistrés.
-        3. Les métriques Ragas évaluent le résultat.
-
-    Les métriques utilisées sont :
-        - Faithfulness
-        - AnswerRelevancy
-        - ContextPrecision
-        - ContextRecall
+        3. Faithfulness est calculé.
+        4. Answer Relevancy est calculé.
+        5. Context Precision est calculé.
+        6. Context Recall est calculé.
 
     Le résultat contient :
+
         - le score de chaque métrique pour chaque question ;
-        - la moyenne de chaque métrique sur l'ensemble du dataset.
+        - la moyenne de chaque métrique ;
+        - la taille du dataset.
     """
 
     if not MISTRAL_API_KEY:
@@ -198,7 +387,9 @@ async def run_ragas_evaluation() -> dict[str, Any]:
             "La clé MISTRAL_API_KEY n'est pas configurée."
         )
 
-    print("\n========== RAGAS EVALUATION ==========")
+    print(
+        "\n========== RAGAS EVALUATION =========="
+    )
 
     # ------------------------------------------------------------------
     # 1. Création du dataset à partir de notre RAG
@@ -208,25 +399,31 @@ async def run_ragas_evaluation() -> dict[str, Any]:
 
     start = time.perf_counter()
 
-    dataset = await _build_ragas_dataset(service)
+    dataset = await _build_ragas_dataset(
+        service
+    )
 
     dataset_time = time.perf_counter() - start
 
     print(
-        f"[1/2] Construction du dataset : "
+        f"\n[1/2] Construction du dataset : "
         f"{dataset_time:.2f} s"
     )
 
     rows = dataset.to_list()
 
     print(
-        f"      Nombre de questions      : "
+        f"      Nombre de questions : "
         f"{len(rows)}"
     )
 
     # ------------------------------------------------------------------
     # 2. Création des modèles utilisés par Ragas
     # ------------------------------------------------------------------
+
+    print(
+        "\n[2/2] Initialisation des modèles Ragas..."
+    )
 
     evaluator_llm, evaluator_embeddings = (
         _create_mistral_models()
@@ -268,146 +465,165 @@ async def run_ragas_evaluation() -> dict[str, Any]:
     # 5. Évaluation question par question
     # ------------------------------------------------------------------
 
-    for index, row in enumerate(rows, start=1):
+    total = len(rows)
+
+    for index, row in enumerate(
+        rows,
+        start=1,
+    ):
 
         user_input = row["user_input"]
         response = row["response"]
         reference = row["reference"]
-        retrieved_contexts = row["retrieved_contexts"]
+        retrieved_contexts = row[
+            "retrieved_contexts"
+        ]
 
         print(
-            f"\n---------- QUESTION {index}/{len(rows)} ----------"
+            f"\n---------- QUESTION "
+            f"{index}/{total} ----------"
         )
-        print(f"Question : {user_input}")
+
+        print(
+            f"Question : {user_input}"
+        )
 
         # --------------------------------------------------------------
         # Faithfulness
         # --------------------------------------------------------------
 
-        start = time.perf_counter()
-
-        result = await faithfulness.ascore(
-            user_input=user_input,
-            response=response,
-            retrieved_contexts=retrieved_contexts,
+        score = await _score_metric(
+            metric=faithfulness,
+            metric_name="Faithfulness",
+            operation_kwargs={
+                "user_input": user_input,
+                "response": response,
+                "retrieved_contexts": (
+                    retrieved_contexts
+                ),
+            },
         )
 
-        elapsed = time.perf_counter() - start
+        scores[
+            "faithfulness"
+        ].append(score)
 
-        score = float(result.value)
-
-        scores["faithfulness"].append(score)
-
-        print(
-            f"Faithfulness       : {score:.3f} "
-            f"({elapsed:.2f} s)"
+        await asyncio.sleep(
+            REQUEST_DELAY
         )
-
-        await asyncio.sleep(1)
 
         # --------------------------------------------------------------
         # Answer Relevancy
         # --------------------------------------------------------------
 
-        start = time.perf_counter()
-
-        result = await answer_relevancy.ascore(
-            user_input=user_input,
-            response=response,
+        score = await _score_metric(
+            metric=answer_relevancy,
+            metric_name="Answer Relevancy",
+            operation_kwargs={
+                "user_input": user_input,
+                "response": response,
+            },
         )
 
-        elapsed = time.perf_counter() - start
+        scores[
+            "answer_relevancy"
+        ].append(score)
 
-        score = float(result.value)
-
-        scores["answer_relevancy"].append(score)
-
-        print(
-            f"Answer Relevancy   : {score:.3f} "
-            f"({elapsed:.2f} s)"
+        await asyncio.sleep(
+            REQUEST_DELAY
         )
-
-        await asyncio.sleep(1)
 
         # --------------------------------------------------------------
         # Context Precision
         # --------------------------------------------------------------
 
-        start = time.perf_counter()
-
-        result = await context_precision.ascore(
-            user_input=user_input,
-            reference=reference,
-            retrieved_contexts=retrieved_contexts,
+        score = await _score_metric(
+            metric=context_precision,
+            metric_name="Context Precision",
+            operation_kwargs={
+                "user_input": user_input,
+                "reference": reference,
+                "retrieved_contexts": (
+                    retrieved_contexts
+                ),
+            },
         )
 
-        elapsed = time.perf_counter() - start
+        scores[
+            "context_precision"
+        ].append(score)
 
-        score = float(result.value)
-
-        scores["context_precision"].append(score)
-
-        print(
-            f"Context Precision  : {score:.3f} "
-            f"({elapsed:.2f} s)"
+        await asyncio.sleep(
+            REQUEST_DELAY
         )
-
-        await asyncio.sleep(1)
 
         # --------------------------------------------------------------
         # Context Recall
         # --------------------------------------------------------------
 
-        start = time.perf_counter()
-
-        result = await context_recall.ascore(
-            user_input=user_input,
-            retrieved_contexts=retrieved_contexts,
-            reference=reference,
+        score = await _score_metric(
+            metric=context_recall,
+            metric_name="Context Recall",
+            operation_kwargs={
+                "user_input": user_input,
+                "retrieved_contexts": (
+                    retrieved_contexts
+                ),
+                "reference": reference,
+            },
         )
 
-        elapsed = time.perf_counter() - start
+        scores[
+            "context_recall"
+        ].append(score)
 
-        score = float(result.value)
-
-        scores["context_recall"].append(score)
-
-        print(
-            f"Context Recall     : {score:.3f} "
-            f"({elapsed:.2f} s)"
+        await asyncio.sleep(
+            REQUEST_DELAY
         )
-
-        await asyncio.sleep(1)
 
     # ------------------------------------------------------------------
-    # 6. Calcul des moyennes sur l'ensemble du dataset
+    # 6. Calcul des moyennes
     # ------------------------------------------------------------------
 
     metrics_average = {
         metric_name: (
-            sum(metric_scores) / len(metric_scores)
+            sum(metric_scores)
+            / len(metric_scores)
             if metric_scores
             else 0.0
         )
-        for metric_name, metric_scores in scores.items()
+        for metric_name, metric_scores
+        in scores.items()
     }
 
     # ------------------------------------------------------------------
     # 7. Affichage des résultats
     # ------------------------------------------------------------------
 
-    print("\n========== RESULTATS RAGAS ==========")
     print(
-        f"Nombre de questions évaluées : {len(rows)}"
+        "\n========== RESULTATS RAGAS =========="
     )
-    print("-------------------------------------")
 
-    for metric_name, score in metrics_average.items():
+    print(
+        f"Nombre de questions évaluées : "
+        f"{len(rows)}"
+    )
+
+    print(
+        "-------------------------------------"
+    )
+
+    for metric_name, score in (
+        metrics_average.items()
+    ):
         print(
-            f"{metric_name:<20}: {score:.3f}"
+            f"{metric_name:<20}: "
+            f"{score:.3f}"
         )
 
-    print("=====================================\n")
+    print(
+        "=====================================\n"
+    )
 
     return {
         "status": "ok",
@@ -418,4 +634,6 @@ async def run_ragas_evaluation() -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_ragas_evaluation())
+    asyncio.run(
+        run_ragas_evaluation()
+    )

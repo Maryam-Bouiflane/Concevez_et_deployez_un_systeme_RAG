@@ -1,6 +1,7 @@
 """API FastAPI pour poser des questions au système RAG."""
 
 from __future__ import annotations
+from openai import RateLimitError
 
 from typing import Any
 
@@ -115,7 +116,35 @@ async def evaluate_rag() -> Any:
     try:
         return await run_ragas_evaluation()
 
+    except RateLimitError as exc:
+        import traceback
+
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "La limite de requêtes de l'API Mistral "
+                "a été atteinte pendant l'évaluation Ragas. "
+                "Veuillez patienter avant de relancer."
+            ),
+        ) from exc
+
+    except RuntimeError as exc:
+        import traceback
+
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+        ) from exc
+
     except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+
         raise HTTPException(
             status_code=500,
             detail=(
