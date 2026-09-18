@@ -7,7 +7,6 @@ import time
 from datetime import date, datetime
 from typing import Any
 
-from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import (
     create_stuff_documents_chain,
 )
@@ -37,16 +36,21 @@ class EventRAGService:
 
         - initialiser les composants ;
         - construire / charger l'index ;
-        - assembler le Retriever et la chaîne RAG ;
+        - assembler le Retriever et la chaîne de génération ;
         - lancer la génération de réponse.
 
-    Le service ne réalise pas directement :
+    Le Retriever est responsable de :
 
-        - le parsing de la question ;
-        - le filtrage metadata ;
-        - la recherche FAISS.
+        - analyser la question ;
+        - extraire les filtres metadata ;
+        - appliquer les filtres ;
+        - effectuer la recherche FAISS ;
+        - appliquer le seuil de similarité ;
+        - appliquer TOP_K ;
+        - retourner les documents avec leurs scores.
 
-    Ces responsabilités appartiennent au Retriever.
+    Les scores de similarité sont utilisés uniquement par le service
+    pour la réponse API. Ils ne sont jamais transmis au LLM.
     """
 
     @staticmethod
@@ -57,16 +61,22 @@ class EventRAGService:
             return set()
 
         pattern = re.compile(
-            r"\b(?:\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4}|"
+            r"\b(?:"
+            r"\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|"
+            r"août|septembre|octobre|novembre|décembre)\s+\d{4}|"
             r"\d{1,2}/\d{1,2}/\d{2,4}|"
             r"\d{4}-\d{2}-\d{2}|"
-            r"\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre))\b",
+            r"\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|"
+            r"août|septembre|octobre|novembre|décembre)"
+            r")\b",
             re.IGNORECASE,
         )
 
         matches: set[str] = set()
+
         for match in pattern.findall(text):
             normalized = " ".join(str(match).strip().split())
+
             if normalized:
                 matches.add(normalized.casefold())
 
@@ -77,6 +87,7 @@ class EventRAGService:
         """Convertit une date textuelle en date Python si possible."""
 
         value = (value or "").strip()
+
         if not value:
             return None
 
@@ -85,8 +96,7 @@ class EventRAGService:
         except ValueError:
             pass
 
-        normalized = value.replace("  ", " ")
-        normalized = normalized.replace("’", "'")
+        normalized = value.replace("’", "'")
 
         month_map = {
             "janvier": "01",
@@ -108,35 +118,66 @@ class EventRAGService:
 
         for pattern in (
             r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$",
-            r"^(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+(\d{4})$",
-            r"^(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)$",
+            r"^(\d{1,2})\s+"
+            r"(janvier|février|fevrier|mars|avril|mai|juin|juillet|"
+            r"août|aout|septembre|octobre|novembre|décembre|decembre)"
+            r"\s+(\d{4})$",
+            r"^(\d{1,2})\s+"
+            r"(janvier|février|fevrier|mars|avril|mai|juin|juillet|"
+            r"août|aout|septembre|octobre|novembre|décembre|decembre)$",
         ):
-            match = re.match(pattern, normalized, flags=re.IGNORECASE)
+            match = re.match(
+                pattern,
+                normalized,
+                flags=re.IGNORECASE,
+            )
+
             if not match:
                 continue
 
-            if pattern.startswith(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$"):
+            if pattern.startswith(
+                r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$"
+            ):
                 day, month, year = match.groups()
+
                 try:
-                    return date(int(year), int(month), int(day))
+                    return date(
+                        int(year),
+                        int(month),
+                        int(day),
+                    )
                 except ValueError:
                     continue
 
             day = match.group(1)
             month_name = match.group(2).lower()
             month = month_map.get(month_name)
+
             if month is None:
                 continue
 
-            year = match.group(3) if len(match.groups()) >= 3 else None
+            year = (
+                match.group(3)
+                if len(match.groups()) >= 3
+                else None
+            )
+
             if year is None:
                 try:
-                    return date(datetime.now().year, int(month), int(day))
+                    return date(
+                        datetime.now().year,
+                        int(month),
+                        int(day),
+                    )
                 except ValueError:
                     continue
 
             try:
-                return date(int(year), int(month), int(day))
+                return date(
+                    int(year),
+                    int(month),
+                    int(day),
+                )
             except ValueError:
                 continue
 
@@ -147,7 +188,10 @@ class EventRAGService:
             "%d %B",
         ):
             try:
-                return datetime.strptime(value, fmt).date()
+                return datetime.strptime(
+                    value,
+                    fmt,
+                ).date()
             except ValueError:
                 continue
 
@@ -157,43 +201,54 @@ class EventRAGService:
         self,
         answer: str,
         context_documents: list[Any],
-        question: str | None = None,
+        parsed_query: Any = None,
     ) -> str:
-        """Vérifie qu’une date explicite de la réponse tombe bien dans la période attendue."""
+        """
+        Vérifie qu'une date explicite de la réponse respecte
+        la période demandée.
+
+        Le Query Parser n'est PAS rappelé ici.
+        Le résultat déjà obtenu pendant le retrieval est réutilisé.
+        """
 
         if not answer or not context_documents:
             return answer
 
-        question = question or ""
         answer_dates = self._extract_date_mentions(answer)
+
         if not answer_dates:
             return answer
 
-        expected_range: tuple[date | None, date | None] | None = None
-        parser = getattr(self, "query_parser", None)
-        if question.strip() and parser is not None:
-            try:
-                parsed_query = parser.parse(question)
-                if parsed_query.filters is not None:
-                    expected_range = (
-                        parsed_query.filters.date_from,
-                        parsed_query.filters.date_to,
-                    )
-            except Exception:
-                expected_range = None
+        expected_range: tuple[
+            date | None,
+            date | None,
+        ] | None = None
+
+        if (
+            parsed_query is not None
+            and parsed_query.filters is not None
+        ):
+            expected_range = (
+                parsed_query.filters.date_from,
+                parsed_query.filters.date_to,
+            )
 
         if expected_range is None:
             return answer
 
         answer_day_values = [
-            self._coerce_text_date(value)
+            parsed_date
             for value in answer_dates
-            if self._coerce_text_date(value) is not None
+            if (
+                parsed_date := self._coerce_text_date(value)
+            ) is not None
         ]
+
         if not answer_day_values:
             return answer
 
         date_from, date_to = expected_range
+
         if date_from is None and date_to is None:
             return answer
 
@@ -208,14 +263,20 @@ class EventRAGService:
                 )
 
         if date_from is not None and date_to is None:
-            if any(item < date_from for item in answer_day_values):
+            if any(
+                item < date_from
+                for item in answer_day_values
+            ):
                 return (
                     "Je n'ai pas trouvé d'événement correspondant "
                     "dans les informations disponibles."
                 )
 
         if date_from is None and date_to is not None:
-            if any(item > date_to for item in answer_day_values):
+            if any(
+                item > date_to
+                for item in answer_day_values
+            ):
                 return (
                     "Je n'ai pas trouvé d'événement correspondant "
                     "dans les informations disponibles."
@@ -255,7 +316,6 @@ class EventRAGService:
 
         self.query_parser: EventQueryParser | None = None
         self.retriever: EventRetriever | None = None
-        self.rag_chain: Any = None
         self._document_chain: Any = None
 
         self._build_langchain_components()
@@ -466,7 +526,7 @@ Contexte :
     # ==================================================================
 
     def _create_retriever(self) -> None:
-        """Crée le Retriever LangChain."""
+        """Crée le Retriever."""
 
         if self.query_parser is None:
             raise RuntimeError(
@@ -485,11 +545,6 @@ Contexte :
                 "La chaîne de documents n'est pas initialisée."
             )
 
-        self.rag_chain = create_retrieval_chain(
-            self.retriever,
-            self._document_chain,
-        )
-
     # ==================================================================
     # ANSWER
     # ==================================================================
@@ -501,23 +556,28 @@ Contexte :
         """
         Répond à une question avec le pipeline RAG.
 
-        La question complète est envoyée au Retriever.
-
-        Le Retriever se charge ensuite de :
+        Pipeline :
 
             question
                 ↓
             Query Parser
                 ↓
-            metadata filters
+            filtres metadata
                 ↓
             FAISS
                 ↓
-            threshold
+            similarity threshold
                 ↓
-            top_k
-
-        Le service ne réalise aucun retrieval directement.
+            TOP_K
+                ↓
+            documents + scores
+                ├──────────────→ API
+                │
+                └──────────────→ documents uniquement
+                                  ↓
+                                LLM
+                                  ↓
+                                réponse
         """
 
         if not question.strip():
@@ -547,67 +607,107 @@ Contexte :
             f"{index_time:.2f} s"
         )
 
-        # --------------------------------------------------------------
-        # 2. Vérification de la chaîne RAG
-        # --------------------------------------------------------------
-
-        if self.rag_chain is None:
+        if self.retriever is None:
             raise RuntimeError(
-                "La chaîne RAG n'est pas disponible."
+                "Le Retriever n'est pas disponible."
             )
 
         # --------------------------------------------------------------
-        # 3. Pipeline RAG complet
+        # 2. Retrieval
         # --------------------------------------------------------------
 
-        mistral_start = time.perf_counter()
+        retrieval_start = time.perf_counter()
 
-        chain_result = self.rag_chain.invoke(
-            {
-                "input": question,
-            }
+        retrieval_results = self.retriever.search(
+            question
         )
 
-        mistral_time = (
+        retrieval_time = (
             time.perf_counter()
-            - mistral_start
+            - retrieval_start
         )
 
         # --------------------------------------------------------------
-        # 4. Documents récupérés
+        # 3. Séparation documents / scores
         # --------------------------------------------------------------
 
-        retrieved_documents = chain_result.get(
-            "context",
-            [],
+        retrieved_documents = [
+            item["document"]
+            for item in retrieval_results
+            if (
+                isinstance(item, dict)
+                and "document" in item
+            )
+        ]
+
+        # Les scores restent dans cette structure pour l'API.
+        # Ils ne sont jamais envoyés au LLM.
+        context_results = [
+            {
+                "score": float(item["score"]),
+                "document": item["document"],
+            }
+            for item in retrieval_results
+            if (
+                isinstance(item, dict)
+                and "document" in item
+                and "score" in item
+            )
+        ]
+
+        print(
+            f"[INFO] Retrieval                 : "
+            f"{retrieval_time:.2f} s"
         )
 
-        context_results: list[
-            dict[str, Any]
-        ] = []
+        print(
+            f"[INFO] Documents récupérés       : "
+            f"{len(retrieved_documents)}"
+        )
 
-        for document in retrieved_documents:
-            context_results.append(
+        # --------------------------------------------------------------
+        # 4. Génération
+        # --------------------------------------------------------------
+
+        generation_start = time.perf_counter()
+
+        if not retrieved_documents:
+            answer_text = (
+                "Je n'ai pas trouvé d'événement correspondant "
+                "dans les informations disponibles."
+            )
+        else:
+            answer_text = self._document_chain.invoke(
                 {
-                    "score": None,
-                    "document": document,
+                    "input": question,
+                    "context": retrieved_documents,
                 }
             )
 
+        generation_time = (
+            time.perf_counter()
+            - generation_start
+        )
+
         # --------------------------------------------------------------
-        # 5. Réponse
+        # 5. Vérification des dates
         # --------------------------------------------------------------
 
-        answer_text = chain_result.get(
-            "answer",
-            "",
+        parsed_query = getattr(
+            self.retriever,
+            "last_parsed_query",
+            None,
         )
 
         answer_text = self._sanitize_answer_to_context(
             answer_text,
             retrieved_documents,
-            question,
+            parsed_query,
         )
+
+        # --------------------------------------------------------------
+        # 6. Temps total
+        # --------------------------------------------------------------
 
         total_time = (
             time.perf_counter()
@@ -615,16 +715,9 @@ Contexte :
         )
 
         print(
-            f"[2/2] Génération LangChain/Mistral : "
-            f"{mistral_time:.2f} s"
+            f"[INFO] Génération Mistral        : "
+            f"{generation_time:.2f} s"
         )
-
-        print(
-            f"      Documents récupérés       : "
-            f"{len(retrieved_documents)}"
-        )
-
-        print("--------------------------------")
 
         print(
             f"TOTAL ASK                     : "

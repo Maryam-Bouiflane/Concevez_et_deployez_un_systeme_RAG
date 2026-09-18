@@ -7,6 +7,7 @@ from typing import Any
 
 import faiss
 import numpy as np
+from pydantic import PrivateAttr
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
@@ -32,17 +33,23 @@ class EventRetriever(BaseRetriever):
                 ↓
         metadata filters
                 ↓
-        pré-filtrage metadata
+      pré-filtrage metadata
                 ↓
-        embedding question complète
+    embedding question complète
                 ↓
-        FAISS
+              FAISS
                 ↓
-           threshold
+            threshold
                 ↓
              top_k
                 ↓
-           Documents
+       Documents + scores
+
+    Les scores sont retournés par la méthode publique search()
+    pour permettre au service/API de les exposer.
+
+    Les scores ne sont jamais ajoutés aux metadata des documents
+    et ne sont pas transmis au LLM.
     """
 
     index: Any
@@ -50,17 +57,52 @@ class EventRetriever(BaseRetriever):
     top_k: int = TOP_K
     threshold: float = SIMILARITY_THRESHOLD
 
-    def _get_relevant_documents(
+    # Résultat du Query Parser de la dernière recherche.
+    #
+    # PrivateAttr est utilisé car EventRetriever hérite de
+    # BaseRetriever, lui-même basé sur Pydantic.
+    _last_parsed_query: Any = PrivateAttr(default=None)
+
+    @property
+    def last_parsed_query(self) -> Any:
+        """
+        Retourne le résultat du Query Parser de la dernière recherche.
+
+        Le service RAG peut ainsi réutiliser les filtres déjà calculés
+        sans déclencher un nouvel appel au Query Parser / LLM.
+        """
+
+        return self._last_parsed_query
+
+    # ==================================================================
+    # PUBLIC SEARCH
+    # ==================================================================
+
+    def search(
         self,
         query: str,
-        *,
-        run_manager: Any = None,
-    ) -> list[Document]:
+    ) -> list[dict[str, Any]]:
         """
-        Récupère les documents pertinents pour une question.
+        Effectue une recherche complète et retourne les documents
+        avec leurs scores de similarité.
 
-        La question complète est conservée pour la recherche
-        sémantique.
+        Cette méthode est destinée au service RAG lorsqu'il a besoin
+        des scores pour les retourner à l'API.
+
+        Exemple de résultat :
+
+            [
+                {
+                    "document": Document(...),
+                    "score": 0.82,
+                },
+                {
+                    "document": Document(...),
+                    "score": 0.76,
+                },
+            ]
+
+        Le score reste séparé du Document et de ses metadata.
         """
 
         if not query.strip():
@@ -72,24 +114,54 @@ class EventRetriever(BaseRetriever):
         # 1. Query Parser
         # --------------------------------------------------------------
 
-        parsed_query = self.query_parser.parse(
-            query
-        )
+        parsed_query = self.query_parser.parse(query)
 
-        filters = parsed_query.filters
+        # On conserve le résultat afin que le service puisse
+        # réutiliser les filtres sans rappeler le Query Parser.
+        self._last_parsed_query = parsed_query
+
+        filters = (
+            parsed_query.filters
+            if parsed_query is not None
+            else None
+        )
 
         # --------------------------------------------------------------
         # 2. Recherche
         # --------------------------------------------------------------
 
-        results = self._search(
+        return self._search(
             query=query,
             filters=filters,
         )
 
+    # ==================================================================
+    # LANGCHAIN RETRIEVER
+    # ==================================================================
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Any = None,
+    ) -> list[Document]:
+        """
+        Récupère les documents pertinents pour LangChain.
+
+        LangChain attend uniquement une liste de Documents.
+        Les scores restent donc internes au résultat de search()
+        et ne sont pas transmis au document chain / LLM.
+        """
+
+        results = self.search(query)
+
         return [
             result["document"]
             for result in results
+            if (
+                isinstance(result, dict)
+                and "document" in result
+            )
         ]
 
     # ==================================================================
@@ -105,6 +177,16 @@ class EventRetriever(BaseRetriever):
         Effectue la recherche vectorielle après filtrage metadata.
 
         Les filtres sont appliqués AVANT la recherche FAISS.
+
+        Retourne :
+
+            [
+                {
+                    "score": float,
+                    "document": Document,
+                },
+                ...
+            ]
         """
 
         if self.index.index is None:
@@ -131,6 +213,8 @@ class EventRetriever(BaseRetriever):
                 )
             )
 
+            # Les filtres sont stricts :
+            # aucun document compatible = aucun résultat.
             if not candidate_indices:
                 return []
 
@@ -187,6 +271,8 @@ class EventRetriever(BaseRetriever):
         ):
             return []
 
+        # Index FAISS temporaire contenant uniquement
+        # les documents compatibles avec les filtres metadata.
         filtered_index = faiss.IndexFlatIP(
             candidate_embeddings.shape[1]
         )
@@ -216,9 +302,15 @@ class EventRetriever(BaseRetriever):
 
             similarity = float(score)
 
+            # ----------------------------------------------------------
+            # Similarity threshold
+            # ----------------------------------------------------------
+
             if similarity < self.threshold:
                 continue
 
+            # L'index retourné par le FAISS temporaire est local.
+            # On le remappe vers l'index FAISS principal.
             original_index = candidate_indices[
                 int(local_index)
             ]
@@ -245,7 +337,12 @@ class EventRetriever(BaseRetriever):
         scores: np.ndarray,
         indices: np.ndarray,
     ) -> list[dict[str, Any]]:
-        """Transforme les résultats FAISS en résultats métier."""
+        """
+        Transforme les résultats FAISS en résultats métier.
+
+        Le score est retourné séparément du Document.
+        Il n'est jamais ajouté aux metadata.
+        """
 
         results: list[dict[str, Any]] = []
 
@@ -257,6 +354,10 @@ class EventRetriever(BaseRetriever):
                 continue
 
             similarity = float(score)
+
+            # ----------------------------------------------------------
+            # Similarity threshold
+            # ----------------------------------------------------------
 
             if similarity < self.threshold:
                 continue
@@ -366,8 +467,11 @@ class EventRetriever(BaseRetriever):
             filter_start = filters.date_from
             filter_end = filters.date_to
 
+            # ----------------------------------------------------------
             # Chevauchement entre la période de l'événement
             # et la période recherchée.
+            # ----------------------------------------------------------
+
             if filter_start is not None:
                 if event_end < filter_start:
                     return False
