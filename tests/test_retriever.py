@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+import faiss
 import numpy as np
 import pytest
 from langchain_core.documents import Document
@@ -139,7 +140,7 @@ def query_parser() -> Mock:
     parser = Mock()
 
     parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     return parser
@@ -165,12 +166,7 @@ def configure_faiss_search(
     scores: list[float],
     indices: list[int],
 ) -> None:
-    """
-    Configure un résultat FAISS simulé.
-
-    Le mock respecte le paramètre k reçu par FAISS.
-    Cela permet notamment de tester correctement top_k.
-    """
+    """Configure un résultat FAISS simulé."""
 
     def search(
         query_embedding: np.ndarray,
@@ -202,16 +198,12 @@ def test_search_returns_documents_with_scores(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    search() retourne les Documents avec leurs scores.
-
-    Les scores restent séparés du Document et de ses metadata.
-    """
+    """search() retourne les Documents avec leurs scores."""
 
     question = "Quels événements sont intéressants ?"
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -227,15 +219,8 @@ def test_search_returns_documents_with_scores(
     assert results[0]["score"] == pytest.approx(0.95)
     assert results[1]["score"] == pytest.approx(0.80)
 
-    assert (
-        results[0]["document"].metadata["uid"]
-        == "1"
-    )
-
-    assert (
-        results[1]["document"].metadata["uid"]
-        == "2"
-    )
+    assert results[0]["document"].metadata["uid"] == "1"
+    assert results[1]["document"].metadata["uid"] == "2"
 
 
 def test_search_keeps_scores_outside_document_metadata(
@@ -243,12 +228,10 @@ def test_search_keeps_scores_outside_document_metadata(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Le score ne doit jamais être ajouté aux metadata du Document.
-    """
+    """Le score ne doit jamais être ajouté aux metadata."""
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -264,7 +247,6 @@ def test_search_keeps_scores_outside_document_metadata(
     document = results[0]["document"]
 
     assert results[0]["score"] == pytest.approx(0.95)
-
     assert "score" not in document.metadata
 
 
@@ -273,17 +255,14 @@ def test_search_stores_last_parsed_query(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    search() conserve le résultat du Query Parser afin que le service
-    RAG puisse le réutiliser sans refaire un appel au LLM.
-    """
+    """search() conserve le résultat du Query Parser."""
 
     parsed_query = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Paris",
             date_from=date(2026, 8, 15),
             date_to=date(2026, 8, 16),
-        )
+        ),
     )
 
     query_parser.parse.return_value = parsed_query
@@ -306,9 +285,7 @@ def test_search_calls_query_parser_once(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Une recherche appelle le Query Parser exactement une fois.
-    """
+    """Une recherche appelle le Query Parser exactement une fois."""
 
     question = "Quels événements sont prévus à Paris ?"
 
@@ -358,14 +335,13 @@ def test_get_relevant_documents_returns_documents_without_scores(
     query_parser: Mock,
 ) -> None:
     """
-    _get_relevant_documents() retourne uniquement les Documents,
-    conformément au contrat LangChain.
+    _get_relevant_documents() retourne uniquement les Documents.
 
     Les scores restent disponibles via search().
     """
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -381,13 +357,14 @@ def test_get_relevant_documents_returns_documents_without_scores(
 
     assert len(results) == 2
 
-    assert isinstance(results[0], Document)
-    assert isinstance(results[1], Document)
+    assert all(
+        isinstance(document, Document)
+        for document in results
+    )
 
     assert results[0].metadata["uid"] == "1"
     assert results[1].metadata["uid"] == "2"
 
-    # Aucun score ne doit être ajouté aux metadata.
     assert "score" not in results[0].metadata
     assert "score" not in results[1].metadata
 
@@ -396,10 +373,10 @@ def test_get_relevant_documents_uses_public_search(
     retriever: EventRetriever,
 ) -> None:
     """
-    _get_relevant_documents() doit passer par search().
+    _get_relevant_documents() doit utiliser search().
 
-    Cela garantit que le Query Parser et last_parsed_query sont
-    correctement gérés par le chemin LangChain.
+    Les scores retournés par search() sont retirés avant de
+    retourner les Documents à LangChain.
     """
 
     document = Document(
@@ -408,7 +385,7 @@ def test_get_relevant_documents_uses_public_search(
         metadata={"uid": "1"},
     )
 
-    retriever.search = Mock(
+    mock_search = Mock(
         return_value=[
             {
                 "score": 0.91,
@@ -417,12 +394,17 @@ def test_get_relevant_documents_uses_public_search(
         ]
     )
 
-    results = retriever._get_relevant_documents(
-        "Concert",
-        run_manager=Mock(),
-    )
+    with patch.object(
+        EventRetriever,
+        "search",
+        mock_search,
+    ):
+        results = retriever._get_relevant_documents(
+            "Concert",
+            run_manager=Mock(),
+        )
 
-    retriever.search.assert_called_once_with("Concert")
+    mock_search.assert_called_once_with("Concert")
 
     assert results == [document]
 
@@ -436,7 +418,7 @@ def test_metadata_filter_by_city(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """Un filtre de ville ne conserve que les événements de cette ville."""
+    """Un filtre de ville ne conserve que les événements concernés."""
 
     retriever = EventRetriever(
         index=fake_index,
@@ -450,9 +432,7 @@ def test_metadata_filter_by_city(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert candidate_indices == [0, 2]
@@ -476,9 +456,7 @@ def test_metadata_filter_is_case_insensitive(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert candidate_indices == [0, 2]
@@ -488,7 +466,7 @@ def test_metadata_filter_by_date(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """Les événements qui chevauchent la période recherchée sont conservés."""
+    """Les événements qui chevauchent la période sont conservés."""
 
     retriever = EventRetriever(
         index=fake_index,
@@ -503,9 +481,7 @@ def test_metadata_filter_by_date(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert candidate_indices == [0, 1]
@@ -515,10 +491,7 @@ def test_metadata_filter_by_date_excludes_events_after_period(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Un événement qui commence après la période recherchée
-    est exclu.
-    """
+    """Les événements entièrement après la période sont exclus."""
 
     retriever = EventRetriever(
         index=fake_index,
@@ -533,9 +506,7 @@ def test_metadata_filter_by_date_excludes_events_after_period(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert 2 not in candidate_indices
@@ -546,7 +517,7 @@ def test_metadata_filters_city_and_date(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """Plusieurs filtres metadata sont combinés avec AND."""
+    """Les filtres metadata sont combinés avec AND."""
 
     retriever = EventRetriever(
         index=fake_index,
@@ -562,9 +533,7 @@ def test_metadata_filters_city_and_date(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert candidate_indices == [2]
@@ -574,7 +543,7 @@ def test_metadata_filter_by_country(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """Le filtre country est appliqué sur metadata['country'].""" 
+    """Le filtre country utilise metadata['country'].""" 
 
     fake_index.documents[0].metadata["country"] = "France"
     fake_index.documents[1].metadata["country"] = "France"
@@ -592,9 +561,7 @@ def test_metadata_filter_by_country(
     )
 
     candidate_indices = (
-        retriever._get_matching_document_indices(
-            filters
-        )
+        retriever._get_matching_document_indices(filters)
     )
 
     assert candidate_indices == [0, 1]
@@ -610,20 +577,12 @@ def test_filtered_search_uses_only_matching_documents(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Vérifie le pipeline :
-
-        parser
-        ↓
-        metadata filter
-        ↓
-        FAISS temporaire sur les candidats
-    """
+    """La recherche filtrée utilise uniquement les candidats metadata."""
 
     query_parser.parse.return_value = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Paris",
-        )
+        ),
     )
 
     results = retriever.search(
@@ -635,29 +594,22 @@ def test_filtered_search_uses_only_matching_documents(
     assert results[0]["document"].metadata["uid"] == "1"
     assert results[1]["document"].metadata["uid"] == "3"
 
-    # Les scores doivent être présents dans le résultat public.
     assert "score" in results[0]
     assert "score" in results[1]
 
-    # Le FAISS global ne doit pas être utilisé lorsqu'un filtre
-    # metadata est présent.
     fake_index.index.search.assert_not_called()
 
 
 def test_filtered_search_preserves_scores(
     retriever: EventRetriever,
-    fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Une recherche filtrée retourne bien les scores calculés
-    par le FAISS temporaire.
-    """
+    """Une recherche filtrée retourne les scores FAISS."""
 
     query_parser.parse.return_value = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Paris",
-        )
+        ),
     )
 
     results = retriever.search(
@@ -665,6 +617,11 @@ def test_filtered_search_preserves_scores(
     )
 
     assert len(results) == 2
+
+    # Query embedding = [1, 0]
+    #
+    # Document 1 = [1, 0] -> score = 1.0
+    # Document 3 = [0.8, 0.2] -> score = 0.8
 
     assert results[0]["score"] == pytest.approx(1.0)
     assert results[1]["score"] == pytest.approx(0.8)
@@ -675,17 +632,12 @@ def test_filtered_search_does_not_use_global_faiss(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Avec des filtres metadata, la recherche doit utiliser uniquement
-    le FAISS temporaire construit à partir des candidats.
-
-    Le FAISS principal ne doit donc pas recevoir de .search().
-    """
+    """Avec un filtre, le FAISS principal ne reçoit aucun search()."""
 
     query_parser.parse.return_value = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Paris",
-        )
+        ),
     )
 
     retriever.search(
@@ -693,6 +645,28 @@ def test_filtered_search_does_not_use_global_faiss(
     )
 
     fake_index.index.search.assert_not_called()
+
+
+def test_filtered_search_respects_top_k(
+    retriever: EventRetriever,
+    query_parser: Mock,
+) -> None:
+    """Une recherche filtrée respecte également top_k."""
+
+    retriever.top_k = 1
+
+    query_parser.parse.return_value = EventSearchQuery(
+        filters=EventSearchFilters(
+            location_city="Paris",
+        ),
+    )
+
+    results = retriever.search(
+        "Quels événements sont prévus à Paris ?"
+    )
+
+    assert len(results) == 1
+    assert results[0]["document"].metadata["uid"] == "1"
 
 
 # ======================================================================
@@ -708,7 +682,7 @@ def test_threshold_removes_low_scores(
     """Les résultats sous le threshold sont supprimés."""
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -735,20 +709,10 @@ def test_threshold_is_inclusive(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Un score exactement égal au threshold est conservé.
-
-    Le code utilise :
-
-        similarity < threshold
-
-    et non :
-
-        similarity <= threshold
-    """
+    """Un score exactement égal au threshold est conservé."""
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     retriever.threshold = 0.80
@@ -780,7 +744,7 @@ def test_top_k_limits_number_of_results(
     """top_k limite le nombre de résultats."""
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -797,7 +761,6 @@ def test_top_k_limits_number_of_results(
 
     assert len(results) == 2
 
-    # Vérifie également que top_k=2 a bien été transmis à FAISS.
     fake_index.index.search.assert_called_once()
 
     _, search_k = fake_index.index.search.call_args.args
@@ -810,13 +773,10 @@ def test_top_k_is_limited_by_index_size(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    search_k ne peut pas dépasser le nombre de documents
-    présents dans l'index.
-    """
+    """search_k ne peut pas dépasser la taille de l'index."""
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     retriever.top_k = 100
@@ -850,12 +810,12 @@ def test_no_matching_documents_returns_empty_list(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """Aucun candidat metadata doit retourner une liste vide."""
+    """Aucun candidat metadata retourne une liste vide."""
 
     query_parser.parse.return_value = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Bordeaux",
-        )
+        ),
     )
 
     results = retriever.search(
@@ -864,7 +824,8 @@ def test_no_matching_documents_returns_empty_list(
 
     assert results == []
 
-    fake_index.index.search.assert_not_called()
+    assert fake_index.index.search.call_count == 0
+    assert fake_index.create_query_embedding.call_count == 0
 
 
 def test_explicit_filter_does_not_fallback_to_unfiltered_documents(
@@ -872,15 +833,12 @@ def test_explicit_filter_does_not_fallback_to_unfiltered_documents(
     fake_index: FakeIndex,
     query_parser: Mock,
 ) -> None:
-    """
-    Un filtre explicite qui ne correspond à aucun document
-    ne doit jamais provoquer un fallback vers tout l'index.
-    """
+    """Un filtre sans correspondance ne provoque aucun fallback."""
 
     query_parser.parse.return_value = EventSearchQuery(
         filters=EventSearchFilters(
             location_city="Bordeaux",
-        )
+        ),
     )
 
     results = retriever.search(
@@ -889,7 +847,8 @@ def test_explicit_filter_does_not_fallback_to_unfiltered_documents(
 
     assert results == []
 
-    fake_index.index.search.assert_not_called()
+    assert fake_index.index.search.call_count == 0
+    assert fake_index.create_query_embedding.call_count == 0
 
 
 # ======================================================================
@@ -903,11 +862,8 @@ def test_original_question_is_sent_to_embedding(
     query_parser: Mock,
 ) -> None:
     """
-    Le retriever doit envoyer la question originale complète
-    au modèle d'embedding.
-
-    Le Query Parser extrait les filtres mais ne réécrit pas
-    la requête sémantique.
+    Le retriever envoie la question originale complète au modèle
+    d'embedding.
     """
 
     question = (
@@ -916,7 +872,7 @@ def test_original_question_is_sent_to_embedding(
     )
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     configure_faiss_search(
@@ -941,9 +897,7 @@ def test_loads_index_when_faiss_index_is_missing(
     documents: list[Document],
     query_parser: Mock,
 ) -> None:
-    """
-    Si l'index FAISS n'est pas chargé, _search() doit appeler load().
-    """
+    """load() est appelé lorsque l'index FAISS est absent."""
 
     fake_index = FakeIndex(
         documents,
@@ -958,16 +912,9 @@ def test_loads_index_when_faiss_index_is_missing(
         ),
     )
 
-    fake_index.index = Mock()
-    fake_index.index.ntotal = 4
-
+    fake_index.index = None
     fake_index.load = Mock()
 
-    # Le code vérifie index.index avant de faire load().
-    # On simule ici un index absent.
-    fake_index.index = None
-
-    # Après load(), l'index doit redevenir disponible.
     loaded_index = Mock()
     loaded_index.ntotal = 4
 
@@ -976,8 +923,6 @@ def test_loads_index_when_faiss_index_is_missing(
 
     fake_index.load.side_effect = load
 
-    # Comme le test porte uniquement sur le comportement de chargement,
-    # on remplace search() pour éviter de dépendre du mock FAISS.
     retriever = EventRetriever(
         index=fake_index,
         query_parser=query_parser,
@@ -986,10 +931,9 @@ def test_loads_index_when_faiss_index_is_missing(
     )
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
-    # Après le chargement, on fournit un résultat FAISS minimal.
     loaded_index.search.return_value = (
         np.array([[0.95]], dtype="float32"),
         np.array([[0]], dtype="int64"),
@@ -1009,10 +953,7 @@ def test_raises_when_index_remains_unavailable(
     documents: list[Document],
     query_parser: Mock,
 ) -> None:
-    """
-    Si l'index reste indisponible après load(), une RuntimeError
-    est levée.
-    """
+    """Une RuntimeError est levée si l'index reste indisponible."""
 
     fake_index = FakeIndex(
         documents,
@@ -1038,7 +979,7 @@ def test_raises_when_index_remains_unavailable(
     )
 
     query_parser.parse.return_value = EventSearchQuery(
-        filters=None
+        filters=None,
     )
 
     with pytest.raises(
