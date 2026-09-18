@@ -39,6 +39,7 @@ Thumbs.db
 # Project-generated data
 data/faiss_index.bin
 data/metadata.json
+data/evaluation/ragas_dataset.json
 
 # Logs
 *.log

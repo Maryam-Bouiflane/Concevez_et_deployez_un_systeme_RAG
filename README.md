@@ -20,6 +20,122 @@ L'objectif de ce POC est de mettre en œuvre une architecture RAG complète, sim
 
 ---
 
+# Démarrage rapide
+
+## 1. Installer les dépendances
+
+```bash
+uv sync
+```
+
+## 2. Configurer les variables d'environnement
+
+Créez un fichier `.env` à la racine du projet :
+
+```env
+MISTRAL_API_KEY=your_key_here
+SIMILARITY_THRESHOLD=0.45
+TOP_K=3
+DEFAULT_CITY=Paris
+LOOKBACK_DAYS=365
+```
+
+## 3. Lancer l'API localement
+
+```bash
+uv run uvicorn app.api:app --reload
+```
+
+L'API est alors accessible sur :
+
+```text
+http://127.0.0.1:8000
+```
+
+Swagger est disponible sur :
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## 4. Lancer l'interface Streamlit localement
+
+Le projet dispose aussi d'une interface utilisateur légère en Streamlit, qui appelle l'API backend sans contenir la logique RAG.
+
+```bash
+API_BASE_URL=http://127.0.0.1:8000 uv run streamlit run streamlit_app.py --server.port 8501
+```
+
+L'interface est alors accessible sur :
+
+```text
+http://127.0.0.1:8501
+```
+
+## 5. Lancer avec Docker
+
+### Option A : backend + UI dans un seul lancement avec Docker Compose
+
+```bash
+docker compose up --build
+```
+
+Cela démarre :
+
+- le backend FastAPI sur `http://localhost:8000`
+- l'interface Streamlit sur `http://localhost:8501`
+
+### Option B : lancer seulement le backend API
+
+```bash
+# 1) construit l'image Docker du projet
+docker build -t rag-app .
+
+# 2) supprime un ancien conteneur du même nom si besoin
+docker rm -f rag-api 2>/dev/null || true
+
+# 3) démarre le conteneur en arrière-plan avec les variables du .env
+docker run -d --env-file .env -p 8000:8000 --name rag-api rag-app
+```
+
+### Option C : lancer seulement l'interface Streamlit
+
+```bash
+docker build -f Dockerfile.streamlit -t rag-ui .
+docker rm -f rag-ui 2>/dev/null || true
+docker run -d -p 8501:8501 --name rag-ui -e API_BASE_URL=http://host.docker.internal:8000 rag-ui
+```
+
+Le conteneur démarre automatiquement l'interface Streamlit sur le port `8501`.
+
+## 6. Vérifier rapidement
+
+Ouvrez dans le navigateur :
+
+```text
+http://localhost:8000/
+```
+
+Pour consulter la documentation Swagger :
+
+```text
+http://localhost:8000/docs
+```
+
+Pour ouvrir l'interface utilisateur :
+
+```text
+http://localhost:8501/
+```
+
+Ou, en ligne de commande :
+
+```bash
+curl http://localhost:8000/
+```
+
+---
+
 ## Architecture générale
 
 Le fonctionnement global du projet est le suivant :
@@ -78,7 +194,7 @@ Le fonctionnement global du projet est le suivant :
                               ▼
                 Documents candidats uniquement
                               │
-                    QUESTION COMPLÈTE
+                    QUESTION UTILISATEUR
                               │
                               ▼
                    ┌──────────────────────┐
@@ -117,66 +233,82 @@ Le fonctionnement global du projet est le suivant :
 
 ```text
 .
+├── .dockerignore
+├── .env
+├── .env.example
+├── .gitignore
+├── .python-version
+├── Dockerfile
+├── README.md
+├── main.py
+├── pyproject.toml
+├── uv.lock
+│
 ├── app/
-│   ├── __init__.py
 │   ├── api.py
 │   ├── config.py
 │   │
 │   ├── core/
-│   │   ├── __init__.py
 │   │   ├── data_loader.py
 │   │   ├── indexer.py
 │   │   ├── query_parser.py
-│   │   ├── retriever.py
-│   │   └── rag_service.py
+│   │   ├── rag_service.py
+│   │   └── retriever.py
+│   │
+│   ├── evaluation/
+│   │   ├── dataset.py
+│   │   └── ragas_evaluation.py
 │   │
 │   ├── schemas/
-│   │   ├── __init__.py
 │   │   └── search.py
 │   │
-│   └── evaluation/
-│       ├── __init__.py
-│       ├── dataset.py
-│       └── ragas_evaluation.py
+│   └── scripts/
+│       ├── build_index.py
+│       └── resolve_reference_contexts.py
 │
 ├── data/
-│   ├── evaluation/
-│   │   └── rag_evaluation.json
-│   ├── events_sample.json
 │   ├── faiss_index.bin
-│   └── metadata.json
+│   ├── metadata.json
+│   └── evaluation/
+│       ├── rag_evaluation.json
+│       └── ragas_dataset.json
 │
-├── tests/
-│   ├── test_api.py
-│   ├── test_data_loader.py
-│   ├── test_dataset.py
-│   ├── test_indexer.py
-│   ├── test_query_parser.py
-│   ├── test_retriever.py
-│   ├── test_rag_service.py
-│   └── test_ragas_evaluation.py
-│
-├── .env
-├── .gitignore
-├── pyproject.toml
-└── README.md
+└── tests/
+    ├── test_api.py
+    ├── test_data_loader.py
+    ├── test_dataset.py
+    ├── test_indexer.py
+    ├── test_mistral.py
+    ├── test_query_parser.py
+    ├── test_ragas_evaluation.py
+    ├── test_ragas_requires_reference_contexts.py
+    ├── test_rag_service.py
+    ├── test_reference_contexts_script.py
+    └── test_retriever.py
 ```
 
 ## Rôle des principaux modules
 
-| Module                               | Rôle                                                                 |
-| ------------------------------------ | -------------------------------------------------------------------- |
-| `app/api.py`                         | Expose le système RAG via FastAPI                                    |
-| `app/config.py`                      | Centralise la configuration et les variables d'environnement         |
-| `app/core/data_loader.py`            | Récupère, normalise et prépare les événements Open Agenda            |
-| `app/core/indexer.py`                | Crée les documents, génère les embeddings et construit l'index FAISS |
-| `app/core/query_parser.py`           | Extrait les contraintes temporelles et géographiques de la question  |
-| `app/core/retriever.py`              | Applique les filtres metadata puis effectue la recherche vectorielle |
-| `app/core/rag_service.py`            | Orchestre le retrieval et la génération de la réponse                |
-| `app/schemas/search.py`              | Définit les modèles Pydantic utilisés par le Query Parser            |
-| `app/evaluation/dataset.py`          | Charge le dataset de référence pour l'évaluation                     |
-| `app/evaluation/ragas_evaluation.py` | Construit le dataset Ragas et exécute l'évaluation                   |
-| `tests/`                             | Contient les tests des différents composants                         |
+| Module                                                    | Rôle                                                                |
+| --------------------------------------------------------- | ------------------------------------------------------------------- |
+| `main.py`                                                 | Point d'entrée principal du projet et lancement local de l'API      |
+| `Dockerfile`                                              | Construit l'image et démarre automatiquement l'API dans le conteneur |
+| `app/api.py`                                              | Expose le système RAG via FastAPI                                   |
+| `app/config.py`                                           | Centralise la configuration et les variables d'environnement        |
+| `app/core/data_loader.py`                                 | Récupère, normalise et prépare les événements Open Agenda           |
+| `app/core/indexer.py`                                     | Crée les documents, génère les embeddings et construit l'index FAISS |
+| `app/core/query_parser.py`                                | Extrait les contraintes temporelles et géographiques de la question |
+| `app/core/retriever.py`                                   | Applique les filtres metadata puis effectue la recherche vectorielle |
+| `app/core/rag_service.py`                                 | Orchestre le retrieval, la génération et la validation de la réponse |
+| `app/schemas/search.py`                                   | Définit les modèles Pydantic utilisés par le Query Parser            |
+| `app/evaluation/dataset.py`                               | Charge le dataset de référence et les jeux d'évaluation             |
+| `app/evaluation/ragas_evaluation.py`                      | Construit le dataset Ragas et exécute l'évaluation                 |
+| `app/scripts/build_index.py`                              | Script pour reconstruire l'index vectoriel                         |
+| `app/scripts/resolve_reference_contexts.py`               | Script pour compléter et valider les `reference_contexts`         |
+| `data/`                                                   | Stocke le dataset d'évaluation, les métadonnées et l'index FAISS   |
+| `tests/test_ragas_requires_reference_contexts.py`         | Vérifie que l'évaluation exige bien les contextes de référence     |
+| `tests/test_reference_contexts_script.py`                 | Vérifie la logique de résolution des `reference_contexts`          |
+| `tests/`                                                  | Contient les tests des différents composants                        |
 
 ---
 
@@ -248,6 +380,36 @@ Il doit être ajouté au `.gitignore` :
 
 ```gitignore
 .env
+```
+
+---
+
+# Lancement avec Docker
+
+Le projet contient un `Dockerfile` qui construit l'image Python du service et démarre automatiquement l'API FastAPI au lancement du conteneur.
+
+Construire l'image :
+
+```bash
+docker build -t rag-app .
+```
+
+Lancer le conteneur sur le port `8000` :
+
+```bash
+docker run -d -p 8000:8000 --name rag-api rag-app
+```
+
+Le conteneur démarre automatiquement avec la commande suivante définie dans le `Dockerfile` :
+
+```bash
+uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
+```
+
+Vous pouvez ensuite vérifier que l'API répond :
+
+```bash
+curl http://localhost:8000/
 ```
 
 ---
@@ -906,22 +1068,36 @@ Index RAG mis à jour
 
 ## `POST /evaluate`
 
-L'endpoint `/evaluate` permet de lancer l'évaluation du système RAG avec **Ragas** directement depuis l'API.
+L'endpoint `/evaluate` lance l'évaluation du système RAG avec **Ragas**.
 
-Il exécute le pipeline d'évaluation sur le jeu de données situé dans :
+À chaque appel, il :
 
-```text
-data/evaluation/rag_evaluation.json
-```
+1. charge le dataset de référence depuis [data/evaluation/rag_evaluation.json](data/evaluation/rag_evaluation.json),
+2. exécute le pipeline RAG complet sur chacune des questions du dataset,
+3. récupère la réponse générée ainsi que les contextes retrouvés,
+4. met à jour ces valeurs dans le JSON de référence,
+5. calcule les métriques d'évaluation.
 
-L'évaluation utilise notamment les métriques :
+Le jeu de données contient pour chaque exemple :
+
+* une question (`user_input`),
+* une référence attendue (`reference`),
+* les contextes de référence (`reference_contexts`),
+* la réponse calculée par le RAG (`response`),
+* les contextes récupérés (`retrieved_contexts`).
+
+Les métriques calculées sont notamment :
 
 * **Faithfulness**
 * **Answer Relevancy**
 * **Context Precision**
 * **Context Recall**
 
-L'évaluation utilise le **pipeline RAG complet**, notamment le Query Parser, le filtrage des métadonnées, la recherche FAISS et la génération de la réponse.
+Exemple d'appel :
+
+```bash
+curl -X POST http://127.0.0.1:8000/evaluate
+```
 
 ---
 
@@ -930,7 +1106,7 @@ L'évaluation utilise le **pipeline RAG complet**, notamment le Query Parser, le
 L'index peut être reconstruit avec l'endpoint :
 
 ```text
-POST /rebuild-index
+POST /rebuild
 ```
 
 La reconstruction relance le pipeline d'indexation :

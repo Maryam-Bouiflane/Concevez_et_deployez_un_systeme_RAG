@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import time
+from datetime import date, datetime
 from typing import Any
 
 from langchain_classic.chains import create_retrieval_chain
@@ -46,6 +48,180 @@ class EventRAGService:
 
     Ces responsabilités appartiennent au Retriever.
     """
+
+    @staticmethod
+    def _extract_date_mentions(text: str) -> set[str]:
+        """Extrait les dates explicites présentes dans un texte."""
+
+        if not text:
+            return set()
+
+        pattern = re.compile(
+            r"\b(?:\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4}|"
+            r"\d{1,2}/\d{1,2}/\d{2,4}|"
+            r"\d{4}-\d{2}-\d{2}|"
+            r"\d{1,2}\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre))\b",
+            re.IGNORECASE,
+        )
+
+        matches: set[str] = set()
+        for match in pattern.findall(text):
+            normalized = " ".join(str(match).strip().split())
+            if normalized:
+                matches.add(normalized.casefold())
+
+        return matches
+
+    @staticmethod
+    def _coerce_text_date(value: str) -> date | None:
+        """Convertit une date textuelle en date Python si possible."""
+
+        value = (value or "").strip()
+        if not value:
+            return None
+
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            pass
+
+        normalized = value.replace("  ", " ")
+        normalized = normalized.replace("’", "'")
+
+        month_map = {
+            "janvier": "01",
+            "février": "02",
+            "fevrier": "02",
+            "mars": "03",
+            "avril": "04",
+            "mai": "05",
+            "juin": "06",
+            "juillet": "07",
+            "août": "08",
+            "aout": "08",
+            "septembre": "09",
+            "octobre": "10",
+            "novembre": "11",
+            "décembre": "12",
+            "decembre": "12",
+        }
+
+        for pattern in (
+            r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$",
+            r"^(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+(\d{4})$",
+            r"^(\d{1,2})\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)$",
+        ):
+            match = re.match(pattern, normalized, flags=re.IGNORECASE)
+            if not match:
+                continue
+
+            if pattern.startswith(r"^(\d{1,2})/(\d{1,2})/(\d{2,4})$"):
+                day, month, year = match.groups()
+                try:
+                    return date(int(year), int(month), int(day))
+                except ValueError:
+                    continue
+
+            day = match.group(1)
+            month_name = match.group(2).lower()
+            month = month_map.get(month_name)
+            if month is None:
+                continue
+
+            year = match.group(3) if len(match.groups()) >= 3 else None
+            if year is None:
+                try:
+                    return date(datetime.now().year, int(month), int(day))
+                except ValueError:
+                    continue
+
+            try:
+                return date(int(year), int(month), int(day))
+            except ValueError:
+                continue
+
+        for fmt in (
+            "%d/%m/%Y",
+            "%d/%m/%y",
+            "%d %B %Y",
+            "%d %B",
+        ):
+            try:
+                return datetime.strptime(value, fmt).date()
+            except ValueError:
+                continue
+
+        return None
+
+    def _sanitize_answer_to_context(
+        self,
+        answer: str,
+        context_documents: list[Any],
+        question: str | None = None,
+    ) -> str:
+        """Vérifie qu’une date explicite de la réponse tombe bien dans la période attendue."""
+
+        if not answer or not context_documents:
+            return answer
+
+        question = question or ""
+        answer_dates = self._extract_date_mentions(answer)
+        if not answer_dates:
+            return answer
+
+        expected_range: tuple[date | None, date | None] | None = None
+        parser = getattr(self, "query_parser", None)
+        if question.strip() and parser is not None:
+            try:
+                parsed_query = parser.parse(question)
+                if parsed_query.filters is not None:
+                    expected_range = (
+                        parsed_query.filters.date_from,
+                        parsed_query.filters.date_to,
+                    )
+            except Exception:
+                expected_range = None
+
+        if expected_range is None:
+            return answer
+
+        answer_day_values = [
+            self._coerce_text_date(value)
+            for value in answer_dates
+            if self._coerce_text_date(value) is not None
+        ]
+        if not answer_day_values:
+            return answer
+
+        date_from, date_to = expected_range
+        if date_from is None and date_to is None:
+            return answer
+
+        if date_from is not None and date_to is not None:
+            if any(
+                item < date_from or item > date_to
+                for item in answer_day_values
+            ):
+                return (
+                    "Je n'ai pas trouvé d'événement correspondant "
+                    "dans les informations disponibles."
+                )
+
+        if date_from is not None and date_to is None:
+            if any(item < date_from for item in answer_day_values):
+                return (
+                    "Je n'ai pas trouvé d'événement correspondant "
+                    "dans les informations disponibles."
+                )
+
+        if date_from is None and date_to is not None:
+            if any(item > date_to for item in answer_day_values):
+                return (
+                    "Je n'ai pas trouvé d'événement correspondant "
+                    "dans les informations disponibles."
+                )
+
+        return answer
 
     def __init__(self) -> None:
         """Initialise le pipeline RAG."""
@@ -425,6 +601,12 @@ Contexte :
         answer_text = chain_result.get(
             "answer",
             "",
+        )
+
+        answer_text = self._sanitize_answer_to_context(
+            answer_text,
+            retrieved_documents,
+            question,
         )
 
         total_time = (

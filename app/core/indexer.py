@@ -15,7 +15,13 @@ from app.config import (
     INDEX_PATH,
     METADATA_PATH,
     MISTRAL_API_KEY,
+    TOP_K,
+    SIMILARITY_THRESHOLD,
 )
+from pathlib import Path
+from datetime import datetime
+import hashlib
+import json
 
 
 class EventRAGIndex:
@@ -326,6 +332,45 @@ class EventRAGIndex:
                 ensure_ascii=False,
                 indent=2,
             )
+
+        # ------------------------------------------------------------------
+        # Write a manifest describing the index and metadata state so
+        # external tools (evaluation) can decide whether to reuse cached
+        # datasets.
+        # ------------------------------------------------------------------
+        try:
+            manifest = {}
+
+            def _file_mtime(path: Path) -> float | None:
+                try:
+                    return float(path.stat().st_mtime)
+                except Exception:
+                    return None
+
+            manifest["created_at"] = datetime.utcnow().isoformat()
+            manifest["index_path"] = str(self.index_path)
+            manifest["metadata_path"] = str(self.metadata_path)
+            manifest["index_mtime"] = _file_mtime(Path(self.index_path))
+            manifest["metadata_mtime"] = _file_mtime(Path(self.metadata_path))
+
+            # compute a content hash for metadata as index_version
+            try:
+                metadata_bytes = Path(self.metadata_path).read_bytes()
+                index_version = hashlib.sha256(metadata_bytes).hexdigest()
+            except Exception:
+                index_version = None
+
+            manifest["index_version"] = index_version
+            manifest["top_k"] = TOP_K
+            manifest["threshold"] = SIMILARITY_THRESHOLD
+
+            manifest_path = self.index_path.parent / "index_manifest.json"
+            with manifest_path.open("w", encoding="utf-8") as mf:
+                json.dump(manifest, mf, ensure_ascii=False, indent=2)
+
+        except Exception:
+            # Non fatal: manifest best-effort
+            pass
 
     # ==================================================================
     # LOAD

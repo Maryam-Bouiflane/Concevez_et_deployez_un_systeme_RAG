@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from ragas import EvaluationDataset
 
-from app.evaluation.ragas_evaluation import run_ragas_evaluation
+from app.evaluation.ragas_evaluation import (
+    _build_ragas_dataset,
+    run_ragas_evaluation,
+)
 
 
 @pytest.mark.asyncio
@@ -125,3 +128,49 @@ async def test_run_ragas_evaluation():
         ],
         reference="Un concert est prévu à Paris.",
     )
+
+
+@pytest.mark.asyncio
+async def test_build_ragas_dataset_recomputes_live_response_and_contexts():
+    """Le dataset ne doit pas réutiliser des réponses pré-calculées périmées."""
+
+    dataset = [
+        {
+            "user_input": "Quels concerts sont prévus à Paris ?",
+            "response": "Ancienne réponse périmée",
+            "retrieved_contexts": ["Ancien contexte périmé"],
+            "reference": "Référence attendue",
+            "reference_contexts": ["Contexte attendu"],
+        }
+    ]
+
+    live_result = {
+        "answer": "Nouvelle réponse live",
+        "context": [
+            {"document": Mock(page_content="Nouveau contexte live")},
+        ],
+    }
+
+    with (
+        patch(
+            "app.evaluation.ragas_evaluation.load_evaluation_rows",
+            return_value=dataset,
+        ),
+        patch(
+            "app.evaluation.ragas_evaluation._call_with_retry",
+            new=AsyncMock(return_value=live_result),
+        ),
+        patch(
+            "app.evaluation.ragas_evaluation.Path.open",
+            new=lambda *args, **kwargs: Mock(
+                __enter__=Mock(),
+                __exit__=Mock(),
+            ),
+        ),
+    ):
+        dataset_obj = await _build_ragas_dataset(service=Mock())
+
+    rows = dataset_obj.to_list()
+
+    assert rows[0]["response"] == "Nouvelle réponse live"
+    assert rows[0]["retrieved_contexts"] == ["Nouveau contexte live"]

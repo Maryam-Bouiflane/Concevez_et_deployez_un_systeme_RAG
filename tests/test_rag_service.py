@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import Mock
 
 import pytest
 from langchain_core.documents import Document
 
 from app.core.rag_service import EventRAGService
+from app.schemas.search import EventSearchFilters, EventSearchQuery
 
 
 @pytest.fixture
@@ -23,6 +25,19 @@ def service() -> EventRAGService:
 
     service.index = Mock()
     service.retriever = Mock()
+    service.query_parser = Mock()
+
+    service.query_parser.parse.side_effect = lambda question: (
+        EventSearchQuery(
+            filters=EventSearchFilters(
+                date_from=date(2026, 9, 5),
+                date_to=date(2026, 9, 5),
+                location_city="Paris",
+            )
+        )
+        if "demain" in question.lower()
+        else EventSearchQuery(filters=None)
+    )
 
     # L'index est considéré comme déjà chargé.
     service.index.index = Mock()
@@ -172,3 +187,22 @@ def test_answer_returns_none_score_when_using_langchain_context(
 
     for item in result["context"]:
         assert item["score"] is None
+
+
+def test_answer_rejects_date_not_in_context(
+    service: EventRAGService,
+) -> None:
+    """Une date absente du contexte ne doit pas être renvoyée."""
+
+    service.rag_chain.invoke.return_value = {
+        "answer": (
+            "Voici les événements prévus demain à Paris "
+            "(le 20 juin 2025) :"
+        ),
+        "context": service.index.documents,
+    }
+
+    result = service.answer("Quels événements sont prévus demain à Paris ?")
+
+    assert "20 juin 2025" not in result["answer"]
+    assert "Je n'ai pas trouvé d'événement correspondant" in result["answer"]

@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Any, Awaitable, Callable, TypeVar
 
+from instructor.v2.core.errors import IncompleteOutputException
 from mistralai.client import Mistral
 from openai import AsyncOpenAI, RateLimitError
 from ragas import EvaluationDataset
@@ -21,6 +22,57 @@ from ragas.metrics.collections import (
 from app.config import MISTRAL_API_KEY
 from app.core.rag_service import EventRAGService
 from app.evaluation.dataset import load_evaluation_rows
+from app.config import INDEX_PATH, METADATA_PATH, TOP_K, SIMILARITY_THRESHOLD
+from pathlib import Path
+import json
+from datetime import datetime, timezone 
+import hashlib
+
+
+def compute_system_version(file_paths: list[str], params: dict[str, Any]) -> str:
+    """Compute a SHA256 fingerprint for a list of files and parameters.
+
+    Missing files are included by their path string to keep the hash
+    stable across environments where some files may be absent.
+    """
+    h = hashlib.sha256()
+
+    for p in file_paths:
+        try:
+            data = Path(p).read_bytes()
+        except Exception:
+            data = p.encode()
+
+        h.update(data)
+
+    # Include params in a deterministic order
+    for key in sorted(params.keys()):
+        h.update(f"{key}={params[key]}".encode())
+
+    return h.hexdigest()
+
+
+def _truncate_contexts_for_metric(
+    contexts: list[str] | None,
+    max_chars: int = 2200,
+    max_docs: int = 2,
+) -> list[str]:
+    """Réduit les contextes à une taille exploitable par les métriques Ragas."""
+
+    if not contexts:
+        return []
+
+    safe_contexts: list[str] = []
+    for context in contexts[:max_docs]:
+        text = " ".join(str(context).split())
+        if len(text) > max_chars:
+            text = text[:max_chars].rsplit(" ", 1)[0].strip()
+            if len(text) < 80:
+                text = text[:max_chars]
+            text = f"{text}..."
+        safe_contexts.append(text)
+
+    return safe_contexts
 
 
 MISTRAL_LLM_MODEL = "mistral-small-latest"
@@ -164,7 +216,7 @@ def _create_mistral_models() -> tuple[Any, MistralEmbeddings]:
         client=evaluator_client,
         temperature=0.0,
         top_p=1.0,
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
     # Client Mistral natif utilisé pour les embeddings.
@@ -204,7 +256,27 @@ async def _build_ragas_dataset(
         dataset Ragas
     """
 
-    evaluation_rows = load_evaluation_rows()
+    try:
+        evaluation_rows = load_evaluation_rows()
+    except FileNotFoundError as exc:
+        print(
+            f"[INFO] Dataset d'évaluation introuvable: {exc}. "
+            "Tentative de construction automatique via le script de génération."
+        )
+
+        try:
+            # Import local builder script and run it to create the file.
+            from app.scripts import build_rag_evaluation_dataset as _rag_builder
+
+            _rag_builder.main()
+
+            evaluation_rows = load_evaluation_rows()
+
+        except Exception as build_exc:
+            raise RuntimeError(
+                "Impossible de construire automatiquement le dataset d'évaluation. "
+                "Exécutez 'uv run python -m app.scripts.build_rag_evaluation_dataset' manuellement."
+            ) from build_exc
 
     if not evaluation_rows:
         raise ValueError(
@@ -212,6 +284,7 @@ async def _build_ragas_dataset(
         )
 
     ragas_rows: list[dict[str, Any]] = []
+    updated_rows: list[dict[str, Any]] = []
 
     total = len(evaluation_rows)
 
@@ -237,6 +310,12 @@ async def _build_ragas_dataset(
             raise ValueError(
                 "Chaque exemple doit contenir "
                 "'reference'."
+            )
+
+        if "reference_contexts" not in row:
+            raise ValueError(
+                "Chaque exemple doit contenir 'reference_contexts'. "
+                "Utilisez le script resolve_reference_contexts.py pour le générer."
             )
 
         print(
@@ -309,14 +388,32 @@ async def _build_ragas_dataset(
             f"{len(retrieved_contexts)}"
         )
 
+        updated_row = dict(row)
+        updated_row["response"] = response
+        updated_row["retrieved_contexts"] = retrieved_contexts
+        updated_row["reference_contexts"] = list(row.get("reference_contexts") or [])
+        updated_rows.append(updated_row)
+
         ragas_rows.append(
             {
                 "user_input": user_input,
                 "response": response,
                 "retrieved_contexts": retrieved_contexts,
                 "reference": reference,
+                "reference_contexts": list(row.get("reference_contexts") or []),
             }
         )
+
+    dataset_path = (
+        Path(__file__).resolve().parents[2]
+        / "data"
+        / "evaluation"
+        / "rag_evaluation.json"
+    )
+    with dataset_path.open("w", encoding="utf-8") as file:
+        json.dump(updated_rows, file, ensure_ascii=False, indent=2)
+
+    print(f"[INFO] Dataset d'évaluation mis à jour : {dataset_path}")
 
     return EvaluationDataset.from_list(
         ragas_rows
@@ -341,6 +438,48 @@ async def _score_metric(
             ),
             operation_name=metric_name,
         )
+
+    except IncompleteOutputException:
+        if metric_name == "Faithfulness" and "retrieved_contexts" in operation_kwargs:
+            safe_kwargs = dict(operation_kwargs)
+            safe_kwargs["retrieved_contexts"] = _truncate_contexts_for_metric(
+                operation_kwargs.get("retrieved_contexts", []),
+            )
+            print(
+                "[WARN] Contexte Ragas trop long pour Faithfulness : "
+                "nouvel essai avec contexte tronqué."
+            )
+            result = await _call_with_retry(
+                operation=lambda: metric.ascore(
+                    **safe_kwargs
+                ),
+                operation_name=f"{metric_name} (contexte tronqué)",
+            )
+        else:
+            raise
+
+    except TypeError as exc:
+        # Compatibility fallback: some metric implementations do not
+        # accept ``reference_contexts``. If that kwarg triggered the
+        # TypeError, retry without it.
+        msg = str(exc)
+        if "reference_contexts" in msg or "unexpected keyword" in msg:
+            slim_kwargs = {k: v for k, v in operation_kwargs.items() if k != "reference_contexts"}
+            try:
+                result = await _call_with_retry(
+                    operation=lambda: metric.ascore(
+                        **slim_kwargs
+                    ),
+                    operation_name=f"{metric_name} (fallback)",
+                )
+            except RateLimitError as exc2:
+                raise RuntimeError(
+                    f"L'API Mistral a atteint sa limite de "
+                    f"requêtes pendant le calcul de "
+                    f"{metric_name} (fallback)."
+                ) from exc2
+        else:
+            raise
 
     except RateLimitError as exc:
         raise RuntimeError(
@@ -399,9 +538,10 @@ async def run_ragas_evaluation() -> dict[str, Any]:
 
     start = time.perf_counter()
 
-    dataset = await _build_ragas_dataset(
-        service
-    )
+    # The evaluation endpoint must regenerate the live RAG outputs on each
+    # call. We intentionally do not reuse the cached ragas_dataset.json as it
+    # can contain stale temporal answers and contexts.
+    dataset = await _build_ragas_dataset(service)
 
     dataset_time = time.perf_counter() - start
 
@@ -478,6 +618,17 @@ async def run_ragas_evaluation() -> dict[str, Any]:
         retrieved_contexts = row[
             "retrieved_contexts"
         ]
+        # Prefer explicit reference_contexts if present (list). If not
+        # provided, compute an implicit list by splitting `reference` on
+        # ';' but do not pass it to metrics (some tests expect no
+        # `reference_contexts` kwarg when it wasn't explicit).
+        has_explicit_reference_contexts = "reference_contexts" in row
+        if has_explicit_reference_contexts:
+            reference_contexts = row["reference_contexts"]
+        else:
+            reference_contexts = [
+                ctx.strip() for ctx in reference.split(";") if ctx.strip()
+            ]
 
         print(
             f"\n---------- QUESTION "
@@ -537,16 +688,18 @@ async def run_ragas_evaluation() -> dict[str, Any]:
         # Context Precision
         # --------------------------------------------------------------
 
+        cp_kwargs = {
+            "user_input": user_input,
+            "reference": reference,
+            "retrieved_contexts": retrieved_contexts,
+        }
+        if has_explicit_reference_contexts:
+            cp_kwargs["reference_contexts"] = reference_contexts
+
         score = await _score_metric(
             metric=context_precision,
             metric_name="Context Precision",
-            operation_kwargs={
-                "user_input": user_input,
-                "reference": reference,
-                "retrieved_contexts": (
-                    retrieved_contexts
-                ),
-            },
+            operation_kwargs=cp_kwargs,
         )
 
         scores[
@@ -561,16 +714,18 @@ async def run_ragas_evaluation() -> dict[str, Any]:
         # Context Recall
         # --------------------------------------------------------------
 
+        cr_kwargs = {
+            "user_input": user_input,
+            "retrieved_contexts": retrieved_contexts,
+            "reference": reference,
+        }
+        if has_explicit_reference_contexts:
+            cr_kwargs["reference_contexts"] = reference_contexts
+
         score = await _score_metric(
             metric=context_recall,
             metric_name="Context Recall",
-            operation_kwargs={
-                "user_input": user_input,
-                "retrieved_contexts": (
-                    retrieved_contexts
-                ),
-                "reference": reference,
-            },
+            operation_kwargs=cr_kwargs,
         )
 
         scores[
