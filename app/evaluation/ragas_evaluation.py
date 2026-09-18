@@ -605,6 +605,7 @@ async def run_ragas_evaluation() -> dict[str, Any]:
     # 5. Évaluation question par question
     # ------------------------------------------------------------------
 
+    evaluation_details: list[dict[str, Any]] = []
     total = len(rows)
 
     for index, row in enumerate(
@@ -736,6 +737,17 @@ async def run_ragas_evaluation() -> dict[str, Any]:
             REQUEST_DELAY
         )
 
+        evaluation_details.append(
+            {
+                "question": user_input,
+                "response": response,
+                "faithfulness": scores["faithfulness"][-1],
+                "answer_relevancy": scores["answer_relevancy"][-1],
+                "context_precision": scores["context_precision"][-1],
+                "context_recall": scores["context_recall"][-1],
+            }
+        )
+
     # ------------------------------------------------------------------
     # 6. Calcul des moyennes
     # ------------------------------------------------------------------
@@ -785,6 +797,7 @@ async def run_ragas_evaluation() -> dict[str, Any]:
         "metrics": metrics_average,
         "scores": scores,
         "dataset_size": len(rows),
+        "details": evaluation_details,
     }
 
 

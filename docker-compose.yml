@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
     ports:
       - "8000:8000"
     container_name: rag-api
@@ -16,6 +18,8 @@ services:
       dockerfile: Dockerfile.streamlit
     environment:
       - API_BASE_URL=http://api:8000
+    volumes:
+      - ./data:/app/data:ro
     ports:
       - "8501:8501"
     depends_on:
