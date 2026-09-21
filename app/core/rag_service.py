@@ -13,6 +13,7 @@ from langchain_classic.chains.combine_documents import (
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from zoneinfo import ZoneInfo
 
 from app.config import (
     MISTRAL_API_KEY,
@@ -26,7 +27,7 @@ from app.core.retriever import EventRetriever
 
 
 MISTRAL_LLM_MODEL = "mistral-small-latest"
-
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 class EventRAGService:
     """
@@ -346,12 +347,29 @@ class EventRAGService:
                     """
 Tu es un assistant spécialisé dans les événements locaux.
 
+La date du jour est : {current_date}
+
+Utilise cette date de référence pour interpréter les dates
+relatives présentes dans la question, comme "aujourd'hui",
+"demain", "après-demain", "ce week-end", etc.
+
 Réponds uniquement à partir des informations présentes
 dans le contexte fourni.
 
 Règles importantes :
 
 - N'invente aucune information.
+- Ne crée jamais d'événement qui n'est pas présent dans le contexte.
+- Ne duplique jamais un événement déjà présent dans le contexte.
+- Le nombre d'événements présentés ne doit pas dépasser
+  le nombre d'événements présents dans le contexte.
+- Si l'utilisateur demande plus d'événements que ceux disponibles
+  dans le contexte, présente uniquement les événements réellement disponibles.
+- Indique uniquement le nombre d'événements que tu présentes réellement
+  dans ta réponse. Ne mentionne jamais un nombre supérieur au nombre
+  d'événements effectivement listés.
+- Ne crée pas et ne déduis pas d'événement supplémentaire pour atteindre
+  le nombre demandé par l'utilisateur.
 - Si le contexte ne permet pas de répondre correctement,
   indique clairement que l'information n'est pas disponible.
 - Réponds en français.
@@ -364,6 +382,7 @@ Règles importantes :
 Le contexte contient les événements récupérés par le système
 de recherche. Les événements présents dans ce contexte sont
 les seuls événements que tu peux utiliser pour répondre.
+
 
 Contexte :
 {context}
@@ -677,10 +696,12 @@ Contexte :
                 "dans les informations disponibles."
             )
         else:
+            today = datetime.now(PARIS_TZ).date()
             answer_text = self._document_chain.invoke(
                 {
                     "input": question,
                     "context": retrieved_documents,
+                    "current_date": today.isoformat(),
                 }
             )
 
@@ -699,11 +720,11 @@ Contexte :
             None,
         )
 
-        answer_text = self._sanitize_answer_to_context(
-            answer_text,
-            retrieved_documents,
-            parsed_query,
-        )
+        # answer_text = self._sanitize_answer_to_context(
+        #     answer_text,
+        #     retrieved_documents,
+        #     parsed_query,
+        # )
 
         # --------------------------------------------------------------
         # 6. Temps total
