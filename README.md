@@ -1,10 +1,10 @@
 # POC RAG Open Agenda
 
-Ce projet implémente un **système RAG (Retrieval-Augmented Generation)** permettant de répondre à des questions en langage naturel à partir d'événements provenant de l'API publique **Open Agenda**.
+Ce projet implémente un **système RAG (Retrieval-Augmented Generation)** permettant de répondre à des questions en langage naturel à partir d'événements provenant de l'API publique **OpenAgenda**.
 
 Le système combine :
 
-* **Open Agenda** pour récupérer les événements ;
+* **OpenAgenda** pour récupérer les événements ;
 * **Mistral Embeddings** (`mistral-embed`) pour transformer les événements et les questions en vecteurs ;
 * **FAISS** pour effectuer la recherche vectorielle ;
 * un **Query Parser** basé sur un LLM Mistral et une sortie structurée Pydantic pour extraire les contraintes temporelles et géographiques ;
@@ -14,6 +14,7 @@ Le système combine :
 * **LangChain** pour orchestrer les documents, le retriever et la chaîne RAG ;
 * **Ragas** pour évaluer automatiquement la qualité du système RAG ;
 * **FastAPI** pour exposer le système sous forme d'API REST ;
+* **Streamlit** pour fournir une interface utilisateur ;
 * **pytest** pour tester les différents composants du projet.
 
 L'objectif de ce POC est de mettre en œuvre une architecture RAG complète, simple, testable et compréhensible, depuis la récupération des données jusqu'à la génération et l'évaluation des réponses.
@@ -22,127 +23,103 @@ L'objectif de ce POC est de mettre en œuvre une architecture RAG complète, sim
 
 # Démarrage rapide
 
-## 1. Installer les dépendances
+## Prérequis
+
+* **Python 3.12**
+* **uv**
+* **Docker** si l'exécution conteneurisée est souhaitée
+* Une clé API **Mistral AI**
+
+## 1. Installation
+
+Cloner le projet puis installer les dépendances :
 
 ```bash
 uv sync
 ```
 
-## 2. Configurer les variables d'environnement
+## 2. Configuration
 
-Créez un fichier `.env` à la racine du projet :
+Créer un fichier `.env` à la racine :
 
 ```env
 MISTRAL_API_KEY=your_key_here
+
 SIMILARITY_THRESHOLD=0.45
 TOP_K=3
+
 DEFAULT_CITY=Paris
 LOOKBACK_DAYS=365
 ```
 
-## 3. Lancer l'API localement
+### Variables d'environnement
 
-```bash
-uv run uvicorn app.api:app --reload
-```
+| Variable               | Description                                                          | Valeur par défaut |
+| ---------------------- | -------------------------------------------------------------------- | ----------------- |
+| `MISTRAL_API_KEY`      | Clé API Mistral utilisée pour les embeddings, le LLM et l'évaluation | Aucune            |
+| `SIMILARITY_THRESHOLD` | Seuil minimal de similarité                                          | `0.45`            |
+| `TOP_K`                | Nombre maximal de documents récupérés                                | `3`               |
+| `DEFAULT_CITY`         | Ville utilisée par défaut pour la récupération des événements        | `Paris`           |
+| `LOOKBACK_DAYS`        | Période de récupération des événements                               | `365`             |
 
-L'API est alors accessible sur :
+## 3. Lancement du projet avec Docker
 
-```text
-http://127.0.0.1:8000
-```
+Le projet est entièrement conteneurisé avec Docker. Il démarre automatiquement :
 
-Swagger est disponible sur :
+* **l'API FastAPI**, accessible sur `http://localhost:8000` ;
+* **l'interface Streamlit**, accessible sur `http://localhost:8501`.
 
-```text
-http://127.0.0.1:8000/docs
-```
-
-## 4. Lancer l'interface Streamlit localement
-
-Le projet dispose aussi d'une interface utilisateur légère en Streamlit, qui appelle l'API backend sans contenir la logique RAG.
-
-```bash
-API_BASE_URL=http://127.0.0.1:8000 uv run streamlit run streamlit_app.py --server.port 8501
-```
-
-L'interface est alors accessible sur :
-
-```text
-http://127.0.0.1:8501
-```
-
-## 5. Lancer avec Docker
-
-### Option A : backend + UI dans un seul lancement avec Docker Compose
+Pour construire les images et démarrer les deux services :
 
 ```bash
 docker compose up --build
 ```
 
-Cela démarre :
+Une fois les conteneurs démarrés :
 
-- le backend FastAPI sur `http://localhost:8000`
-- l'interface Streamlit sur `http://localhost:8501`
-
-### Option B : lancer seulement le backend API
-
-```bash
-# 1) construit l'image Docker du projet
-docker build -t rag-app .
-
-# 2) supprime un ancien conteneur du même nom si besoin
-docker rm -f rag-api 2>/dev/null || true
-
-# 3) démarre le conteneur en arrière-plan avec les variables du .env
-docker run -d --env-file .env -p 8000:8000 --name rag-api rag-app
-```
-
-### Option C : lancer seulement l'interface Streamlit
-
-```bash
-docker build -f Dockerfile.streamlit -t rag-ui .
-docker rm -f rag-ui 2>/dev/null || true
-docker run -d -p 8501:8501 --name rag-ui -e API_BASE_URL=http://host.docker.internal:8000 rag-ui
-```
-
-Le conteneur démarre automatiquement l'interface Streamlit sur le port `8501`.
-
-## 6. Vérifier rapidement
-
-Ouvrez dans le navigateur :
+**Interface Streamlit :**
 
 ```text
-http://localhost:8000/
+http://localhost:8501
 ```
 
-Pour consulter la documentation Swagger :
+**API FastAPI :**
+
+```text
+http://localhost:8000
+```
+
+**Documentation Swagger :**
 
 ```text
 http://localhost:8000/docs
 ```
 
-Pour ouvrir l'interface utilisateur :
+### Communication entre les services
 
-```text
-http://localhost:8501/
-```
+Streamlit communique avec l'API FastAPI via le réseau Docker.
+La logique RAG reste entièrement dans l'API. Streamlit sert uniquement d'interface utilisateur et communique avec le backend via l'API.
 
-Ou, en ligne de commande :
+Le dossier `data/` est partagé entre les deux conteneurs.
+Cela permet notamment à l'API de construire ou reconstruire l'index, tandis que Streamlit peut accéder aux données nécessaires à l'affichage et à l'évaluation.
+
+### Arrêter les conteneurs
+
+Pour arrêter les services :
 
 ```bash
-curl http://localhost:8000/
+docker compose down
 ```
 
 ---
 
-## Architecture générale
+# Architecture générale
 
 Le fonctionnement global du projet est le suivant :
 
 ```text
                          ┌────────────────────────┐
-                         │      Open Agenda       │
+                         │      OpenAgenda        │
                          │       API publique     │
                          └────────────┬───────────┘
                                       │
@@ -168,7 +145,10 @@ Le fonctionnement global du projet est le suivant :
                          ┌────────────────────────┐
                          │         FAISS          │
                          │                        │
-                         │ Index vectoriel        │
+                         │ Index vectoriel        │ 
+                         │ faiss_index.bin        │   
+                         │       +                │   
+                         │ metadata.json          │   
                          └────────────────────────┘
 
 
@@ -192,9 +172,10 @@ Le fonctionnement global du projet est le suivant :
                    └──────────┬───────────┘
                               │
                               ▼
-                Documents candidats uniquement
+                    Documents candidats
                               │
-                    QUESTION UTILISATEUR
+                              │
+                    QUESTION COMPLÈTE
                               │
                               ▼
                    ┌──────────────────────┐
@@ -209,23 +190,86 @@ Le fonctionnement global du projet est le suivant :
                    └──────────┬───────────┘
                               │
                               ▼
-                    Seuil de similarité
+                  Seuil de similarité + TOP_K
                               │
                               ▼
-                           TOP_K
-                              │
-                              ▼
-                   Documents pertinents
+                     Documents pertinents (Scores → API)
                               │
                               ▼
                    ┌──────────────────────┐
-                   │       Mistral        │
+                   │     Mistral LLM      │
                    │ mistral-small-latest │
                    └──────────┬───────────┘
                               │
                               ▼
-                         Réponse finale
+                       Réponse finale
+
+                       
+                          ÉVALUATION
+                         ============
+
+                      Dataset de référence
+                                │
+                                ▼
+                         Système RAG réel
+                                │
+                                ├── Réponse
+                                │
+                                └── Contextes
+                                │
+                                ▼
+                              Ragas
+                                │
+                 ┌──────────────┼──────────────┐
+                 ▼              ▼              ▼
+            Faithfulness   Answer Relevancy   Context Precision / Recall
+                                │
+                                ▼
+                       Scores d'évaluation
 ```
+
+L'architecture sépare clairement les différentes responsabilités :
+
+```text
+Data Loader
+
+    → acquisition et préparation des données
+
+Indexer
+
+    → documents + embeddings + FAISS
+
+Query Parser
+
+    → extraction des contraintes metadata
+
+Retriever
+
+    → filtrage metadata + recherche vectorielle
+    → calcul du score de similarité
+
+RAG Service
+
+    → orchestration du retrieval et de la génération
+
+FastAPI
+
+    → exposition du système
+
+Streamlit
+
+    → interface utilisateur
+
+Ragas
+
+    → évaluation
+
+pytest
+
+    → validation automatisée
+```
+
+Cette séparation permet de construire un système RAG **modulaire, testable et évolutif**.
 
 ---
 
@@ -239,10 +283,13 @@ Le fonctionnement global du projet est le suivant :
 ├── .gitignore
 ├── .python-version
 ├── Dockerfile
+├── Dockerfile.streamlit
 ├── README.md
+├── docker-compose.yml
 ├── main.py
 ├── pyproject.toml
 ├── uv.lock
+├── streamlit_app.py
 │
 ├── app/
 │   ├── api.py
@@ -289,142 +336,38 @@ Le fonctionnement global du projet est le suivant :
 
 ## Rôle des principaux modules
 
-| Module                                                    | Rôle                                                                |
-| --------------------------------------------------------- | ------------------------------------------------------------------- |
-| `main.py`                                                 | Point d'entrée principal du projet et lancement local de l'API      |
-| `Dockerfile`                                              | Construit l'image et démarre automatiquement l'API dans le conteneur |
-| `app/api.py`                                              | Expose le système RAG via FastAPI                                   |
-| `app/config.py`                                           | Centralise la configuration et les variables d'environnement        |
-| `app/core/data_loader.py`                                 | Récupère, normalise et prépare les événements Open Agenda           |
-| `app/core/indexer.py`                                     | Crée les documents, génère les embeddings et construit l'index FAISS |
-| `app/core/query_parser.py`                                | Extrait les contraintes temporelles et géographiques de la question |
-| `app/core/retriever.py`                                   | Applique les filtres metadata puis effectue la recherche vectorielle |
-| `app/core/rag_service.py`                                 | Orchestre le retrieval, la génération et la validation de la réponse |
-| `app/schemas/search.py`                                   | Définit les modèles Pydantic utilisés par le Query Parser            |
-| `app/evaluation/dataset.py`                               | Charge le dataset de référence et les jeux d'évaluation             |
-| `app/evaluation/ragas_evaluation.py`                      | Construit le dataset Ragas et exécute l'évaluation                 |
-| `app/scripts/build_index.py`                              | Script pour reconstruire l'index vectoriel                         |
-| `app/scripts/resolve_reference_contexts.py`               | Script pour compléter et valider les `reference_contexts`         |
-| `data/`                                                   | Stocke le dataset d'évaluation, les métadonnées et l'index FAISS   |
-| `tests/test_ragas_requires_reference_contexts.py`         | Vérifie que l'évaluation exige bien les contextes de référence     |
-| `tests/test_reference_contexts_script.py`                 | Vérifie la logique de résolution des `reference_contexts`          |
-| `tests/`                                                  | Contient les tests des différents composants                        |
-
----
-
-# Prérequis
-
-* **Python 3.12**
-* **uv**
-* Une clé API **Mistral AI**
-* Une connexion Internet pour :
-
-  * récupérer les événements Open Agenda ;
-  * utiliser les embeddings Mistral ;
-  * utiliser le LLM Mistral ;
-  * effectuer l'évaluation Ragas.
-
----
-
-# Installation
-
-Clonez le projet puis installez les dépendances avec `uv` :
-
-```bash
-uv sync
-```
-
-Les dépendances utilisées par le projet sont définies dans `pyproject.toml`.
-
-Pour vérifier la version de Python utilisée :
-
-```bash
-uv run python --version
-```
-
-Pour vérifier la version de `uv` :
-
-```bash
-uv --version
-```
-
----
-
-# Configuration
-
-Créez un fichier `.env` à la racine du projet :
-
-```env
-MISTRAL_API_KEY=your_key_here
-
-SIMILARITY_THRESHOLD=0.45
-TOP_K=3
-
-DEFAULT_CITY=Paris
-LOOKBACK_DAYS=365
-```
-
-## Variables d'environnement
-
-| Variable               | Description                                                          | Valeur par défaut |
-| ---------------------- | -------------------------------------------------------------------- | ----------------- |
-| `MISTRAL_API_KEY`      | Clé API Mistral utilisée pour les embeddings, le LLM et l'évaluation | Aucune            |
-| `SIMILARITY_THRESHOLD` | Seuil minimal de similarité pour conserver un document               | `0.45`            |
-| `TOP_K`                | Nombre maximal de documents récupérés                                | `3`               |
-| `DEFAULT_CITY`         | Ville utilisée lors de la récupération des événements                | `Paris`           |
-| `LOOKBACK_DAYS`        | Période de récupération des événements                               | `365`             |
-
-Le fichier `.env` contient une clé secrète et **ne doit pas être commité dans Git**.
-
-Il doit être ajouté au `.gitignore` :
-
-```gitignore
-.env
-```
-
----
-
-# Lancement avec Docker
-
-Le projet contient un `Dockerfile` qui construit l'image Python du service et démarre automatiquement l'API FastAPI au lancement du conteneur.
-
-Construire l'image :
-
-```bash
-docker build -t rag-app .
-```
-
-Lancer le conteneur sur le port `8000` :
-
-```bash
-docker run -d -p 8000:8000 --name rag-api rag-app
-```
-
-Le conteneur démarre automatiquement avec la commande suivante définie dans le `Dockerfile` :
-
-```bash
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
-```
-
-Vous pouvez ensuite vérifier que l'API répond :
-
-```bash
-curl http://localhost:8000/
-```
+| Module                                      | Rôle                                                                 |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `streamlit_app.py`                          | Interface utilisateur Streamlit                                      |
+| `Dockerfile`                                | Construit l'image du backend FastAPI                                 |
+| `Dockerfile.streamlit`                      | Construit l'image de l'interface Streamlit                           |
+| `docker-compose.yml`                        | Orchestre les services API et Streamlit                              |
+| `app/api.py`                                | Expose le système RAG via FastAPI                                    |
+| `app/config.py`                             | Centralise la configuration et les variables d'environnement         |
+| `app/core/data_loader.py`                   | Récupère, normalise et prépare les événements OpenAgenda             |
+| `app/core/indexer.py`                       | Crée les documents, génère les embeddings et construit l'index FAISS |
+| `app/core/query_parser.py`                  | Extrait les contraintes temporelles et géographiques de la question utilisateur                |
+| `app/core/retriever.py`                     | Applique les filtres metadata puis effectue la recherche vectorielle |
+| `app/core/rag_service.py`                   | Orchestre le retrieval et la génération de la réponse                |
+| `app/schemas/search.py`                     | Définit les modèles Pydantic du Query Parser                         |
+| `app/evaluation/dataset.py`                 | Charge les données d'évaluation                           |
+| `app/evaluation/ragas_evaluation.py`        | Complète le dataset Ragas et exécute l'évaluation                   |
+| `app/scripts/build_index.py`                | Script de reconstruction de l'index                                  |
+| `app/scripts/resolve_reference_contexts.py` | Complète et valide les `reference_contexts` du dataset d'évaluation                          |
+| `data/`                                     | Stocke l'index FAISS, les métadonnées et les données d'évaluation    |
+| `tests/`                                    | Contient les tests automatisés                                       |
 
 ---
 
 # Acquisition et préparation des données
 
-Les événements sont récupérés depuis l'API publique Open Agenda.
+Les événements sont récupérés depuis l'API publique OpenAgenda.
 
 Le `Data Loader` est responsable de :
 
 1. récupérer les événements ;
 2. normaliser les différents champs ;
 3. gérer les valeurs manquantes ;
-4. extraire les informations temporelles ;
-5. extraire les informations géographiques ;
 6. construire le contenu textuel utilisé pour les embeddings ;
 7. effectuer la déduplication lorsque nécessaire.
 
@@ -459,8 +402,8 @@ Pour chaque événement, le système construit un objet `Document` LangChain con
 
 ```text
 Document
-├── page_content
-│   └── contenu textuel de l'événement
+
+├── page_content (contenu textuel de l'événement)
 │
 └── metadata
     ├── uid
@@ -476,21 +419,13 @@ Document
     └── country
 ```
 
-Le `page_content` est transformé en vecteur avec le modèle :
+Le `page_content` est transformé en vecteur avec le model `mistral-embed`.
 
-```text
-mistral-embed
-```
-
-Les vecteurs sont ensuite stockés dans un index :
-
-```text
-FAISS IndexFlatIP
-```
+Les vecteurs sont ensuite stockés dans : `FAISS IndexFlatIP`.
 
 `IndexFlatIP` utilise le produit scalaire (`Inner Product`) pour comparer les vecteurs.
 
-Les embeddings utilisés dans ce projet étant normalisés, le produit scalaire permet d'obtenir une mesure proche de la **similarité cosinus**.
+Les embeddings utilisés dans ce projet étant normalisés, le produit scalaire permet d'obtenir une mesure correspondant à la similarité cosinus.
 
 Les fichiers générés sont notamment :
 
@@ -500,7 +435,7 @@ data/metadata.json
 ```
 
 * `faiss_index.bin` contient l'index vectoriel ;
-* `metadata.json` contient les documents et leurs métadonnées associées.
+* `metadata.json` contient les métadonnées des documents.
 
 ---
 
@@ -512,17 +447,11 @@ Son rôle est de transformer la question utilisateur en contraintes pouvant êtr
 
 Le Query Parser utilise :
 
+* `ChatPromptTemplate` de LangChain pour construire le prompt envoyé au LLM chargé d'analyser la question de l'utilisateur;
 * un LLM Mistral ;
-* `ChatPromptTemplate` ;
-* une sortie structurée Pydantic ;
-* le schéma `EventSearchQuery`.
+* une sortie structurée Pydantic sur le schéma `EventSearchQuery`.
 
-Le parser extrait uniquement :
-
-1. les contraintes temporelles ;
-2. les contraintes géographiques.
-
-Il **ne réécrit pas la question sémantique**.
+Le parser extrait uniquement les contraintes temporelles et géographiques. Il **ne réécrit pas la question sémantique**.
 
 Par exemple :
 
@@ -530,10 +459,11 @@ Par exemple :
 Quels concerts de jazz sont prévus ce week-end à Paris pour les familles ?
 ```
 
-peut être transformé en :
+peut produire :
 
 ```text
 filters:
+
     date_from: 2026-09-05
     date_to: 2026-09-06
     location_city: Paris
@@ -550,30 +480,18 @@ reste dans la question originale et sera utilisée pour la recherche vectorielle
 
 ## Contraintes temporelles
 
-Le Query Parser est capable d'interpréter notamment :
+Le Query Parser peut interpréter par exemple :
 
 * aujourd'hui ;
 * demain ;
-* après-demain ;
-* dans plusieurs jours ;
 * ce week-end ;
-* le week-end prochain ;
-* cette semaine ;
-* la semaine prochaine ;
 * la semaine dernière ;
-* dans deux semaines ;
-* ce mois-ci ;
 * le mois prochain ;
-* le mois dernier ;
-* cette année ;
 * l'année prochaine ;
-* l'année dernière ;
 * une date précise ;
-* une période précise ;
-* un mois précis ;
-* une année précise.
+* une période précise ; etc..
 
-Les expressions relatives sont converties en dates réelles à partir de la date actuelle.
+Les expressions relatives sont converties en dates réelles à partir de la date courante.
 
 Par exemple :
 
@@ -633,6 +551,14 @@ location_city = Paris
 
 Les autres champs géographiques restent `null`.
 
+## Pourquoi utiliser un Query Parser pour filtrer avant FAISS ?
+
+FAISS réalise une recherche sémantique, mais ne prend pas en charge directement les filtres sur les métadonnées.
+
+Les documents sont donc d'abord filtrés selon les critères explicites de la question, puis la recherche vectorielle est effectuée uniquement parmi les documents correspondants.
+
+Cela garantit que la demande utilisateur soit toujours respectés.
+
 ---
 
 # Fonctionnement du Retrieval
@@ -645,28 +571,27 @@ Question utilisateur
         ├─────────────────────────────┐
         │                             │
         ▼                             ▼
- Query Parser                  Question originale
+  Query Parser                 Question originale
         │                             │
         ▼                             │
-Filtres metadata                     │
+ Filtres metadata                     │
         │                             │
         ▼                             │
-Documents candidats                  │
+Documents candidats                   │
         │                             │
         └──────────────┬──────────────┘
                        │
                        ▼
-             Embedding de la
-             question complète
+        Embedding de la question complète
                        │
                        ▼
-                    FAISS
+                Recherche FAISS
                        │
                        ▼
              Similarity threshold
                        │
                        ▼
-                    TOP_K
+                     TOP_K
                        │
                        ▼
               Documents pertinents
@@ -690,11 +615,9 @@ date_to = 2026-09-06
 location_city = Paris
 ```
 
-## 2. Pré-filtrage metadata
+## 2. Pré-filtrage des Documents avec les metadata
 
 Les métadonnées sont ensuite utilisées pour sélectionner les documents candidats.
-
-Le filtrage est effectué **avant la recherche FAISS**.
 
 Par exemple :
 
@@ -703,30 +626,22 @@ Tous les événements
        ↓
 Ville = Paris
        ↓
-Date comprise dans la période demandée
+Date compatible avec la période demandée
        ↓
 Documents candidats
 ```
 
-Les filtres sont combinés avec une logique `AND`.
+Remarque : Un événement est conservé lorsqu'il **chevauche la période recherchée**. Cela permet notamment de conserver un événement qui commence avant la période demandée mais se poursuit pendant celle-ci.
 
-Ainsi, un événement doit respecter l'ensemble des contraintes explicites.
 
-### Filtrage temporel
+Un événement doit donc respecter l'ensemble des contraintes explicites (filtres combinés avec une logique `AND`).
 
-Un événement est conservé lorsqu'il chevauche la période recherchée.
 
-Cela permet notamment de conserver un événement qui commence avant la période demandée mais se poursuit pendant celle-ci.
+## 3. Embedding de la question utilsiateur
 
-## 3. Recherche vectorielle
+Une fois les documents candidats déterminés, la **question complète de l'utilisateur** est transformée en embedding avec `mistral-embed`.
 
-Une fois les documents candidats déterminés, la **question complète de l'utilisateur** est transformée en embedding avec :
-
-```text
-mistral-embed
-```
-
-Cette question complète est importante car elle contient les informations sémantiques nécessaires à la recherche.
+La question contient les informations sémantiques nécessaires à la recherche.
 
 Par exemple :
 
@@ -734,47 +649,17 @@ Par exemple :
 Quels concerts de jazz sont prévus ce week-end à Paris pour les familles ?
 ```
 
-n'est pas réduite à :
+est la requête envoyée au modèle d'embedding.
 
-```text
-concerts
-```
-
-ou :
-
-```text
-jazz
-```
-
-L'embedding est calculé à partir de la question complète.
+Le Query Parser extrait les contraintes, mais ne remplace pas la question originale.
 
 ## 4. Recherche FAISS
 
 FAISS compare l'embedding de la question avec les embeddings des documents candidats.
 
-Si aucun filtre metadata n'est présent, la recherche est effectuée directement dans l'index FAISS global.
-
-Si des filtres sont présents, seuls les documents correspondants sont utilisés pour construire une recherche FAISS temporaire.
-
-Cela permet de réaliser :
-
-```text
-Filtres metadata
-        ↓
-Documents candidats
-        ↓
-Recherche vectorielle
-```
-
-plutôt que :
-
-```text
-Recherche vectorielle globale
-        ↓
-Filtrage metadata
-```
-
-Cette distinction permet de respecter strictement les contraintes explicites de l'utilisateur.
+Deux cas sont possibles :
+1) Aucun filtre metadata. La recherche est effectuée directement dans l'index FAISS global.
+2) Présence de filtres metadata. Seuls les documents correspondant aux filtres sont utilisés comme candidats. Le retriever construit alors une recherche FAISS temporaire à partir des embeddings des documents candidats. Cela garantit qu'un document qui ne respecte pas une contrainte explicite n'est pas récupéré.
 
 ## 5. Seuil de similarité
 
@@ -786,7 +671,7 @@ SIMILARITY_THRESHOLD=0.45
 
 sont supprimés.
 
-Cela évite de transmettre au LLM des documents trop éloignés de la question.
+Un résultat dont le score est exactement égal au seuil est conservé.
 
 ## 6. TOP_K
 
@@ -796,7 +681,7 @@ Le paramètre :
 TOP_K=3
 ```
 
-limite le nombre maximal de documents transmis au système de génération.
+limite le nombre maximal de documents récupérés.
 
 Par exemple :
 
@@ -810,12 +695,12 @@ TOP_K = 3
 3 documents maximum
 ```
 
-Le nombre réel de documents peut être inférieur à `TOP_K` si :
+Le nombre réel peut être inférieur à `TOP_K` si :
 
 * moins de documents candidats existent ;
 * certains documents sont sous le seuil de similarité.
 
-## 7. Aucun fallback sur les filtres explicites
+## Aucun fallback sur les filtres explicites
 
 Lorsqu'un utilisateur fournit un filtre explicite, le système **ne revient pas à une recherche globale** si aucun document ne correspond.
 
@@ -825,23 +710,42 @@ Par exemple :
 Quels événements sont prévus à Bordeaux ?
 ```
 
-Si aucun événement ne correspond à `location_city = Bordeaux`, le système retourne zéro document.
+Si aucun événement correspond à :
+
+```text
+location_city = Bordeaux
+```
+
+le retriever retourne zéro document.
 
 Il ne recherche pas automatiquement dans tous les événements.
 
 Cela évite de retourner des événements qui ne respectent pas la contrainte demandée.
 
+## Gestion des scores de retrieval
+
+Le retriever calcule un score de similarité pour chaque document récupéré et le stocke séparément dans le résultat de recherche, sans l'ajouter aux Document.metadata.
+
+Le score est une information technique utile pour :
+
+* l'API ;
+* l'interface utilisateur ;
+* l'analyse du retrieval ;
+* les tests ;
+* l'évaluation.
+
+Il n'est cependant pas nécessaire au LLM pour générer la réponse.
+
 ---
 
 # Génération de la réponse
 
-Après le retrieval, les documents pertinents sont transmis au LLM :
+Après le retrieval, les documents pertinents sont transmis au LLM `mistral-small-latest`.
 
-```text
-mistral-small-latest
-```
+Le LLM reçoit :
 
-Le LLM reçoit la question ainsi que les documents récupérés comme contexte.
+* la question utilisateur;
+* les documents récupérés comme contexte.
 
 Le principe est :
 
@@ -855,60 +759,66 @@ Mistral Small
 Réponse
 ```
 
-Le modèle doit donc générer sa réponse à partir des informations récupérées par le système RAG.
+L'objectif est de faire générer la réponse à partir des informations récupérées par le système RAG.
 
-L'objectif est de limiter les réponses non fondées en fournissant au modèle un contexte provenant des événements Open Agenda.
-
-Si aucun document suffisamment pertinent n'est trouvé, aucune information documentaire pertinente n'est fournie au LLM pour répondre à la question.
+Si aucun document suffisamment pertinent n'est trouvé, aucun contexte documentaire pertinent n'est transmis au LLM.
 
 ---
 
 # Architecture LangChain
 
-LangChain est utilisé principalement pour structurer le pipeline RAG.
+**LangChain** est un framework Python qui permet de construire et d'organiser des applications utilisant des LLM. Il fournit notamment des interfaces standardisées pour les **retrievers**, les **documents**, les **prompts** et les **chaînes de traitement**.
 
-Le retriever implémente l'interface `BaseRetriever`.
+Dans notre projet, LangChain est principalement utilisé pour **structurer le pipeline RAG** et faire communiquer ses différentes étapes de manière standardisée. Cela facilite notamment l'intégration avec les composants de recherche et de génération, ainsi que les tests et l'évolution de l'architecture.
 
-Le flux est donc conceptuellement :
+Notre `EventRetriever` implémente l'interface `BaseRetriever` de LangChain. Il réalise la recherche des documents en utilisant les différents composants du pipeline RAG :
 
 ```text
 EventRAGService
        │
        ▼
-EventRetriever
+EventRetriever (BaseRetriever)
        │
        ├── Query Parser
        │
-       ├── Metadata filtering
+       ├── Filtrage des metadata
        │
-       ├── Mistral embedding
+       ├── Embedding Mistral
        │
-       ├── FAISS
+       ├── Recherche FAISS
        │
-       ├── Similarity threshold
+       ├── Seuil de similarité
        │
        └── TOP_K
        │
        ▼
-List[Document]
+Liste de Documents LangChain
        │
        ▼
 Document chain
        │
        ▼
-Mistral LLM
+LLM Mistral
        │
        ▼
 Réponse
 ```
 
-La séparation des responsabilités permet de tester indépendamment :
+Dans notre cas, LangChain nous permet donc notamment de :
+
+* représenter les événements récupérés sous forme de `Document` ;
+* intégrer notre `EventRetriever` dans le pipeline RAG grâce à `BaseRetriever` ;
+* construire le prompt envoyé au LLM avec `ChatPromptTemplate` ;
+* transmettre les documents pertinents au LLM via la `Document chain`.
+
+La séparation des responsabilités permet de tester et de faire évoluer indépendamment :
 
 * le parsing de la question ;
-* le filtrage metadata ;
+* le filtrage des metadata ;
 * la recherche vectorielle ;
+* le retriever ;
 * le service RAG ;
-* la génération ;
+* la génération de la réponse ;
 * l'évaluation.
 
 ---
@@ -917,103 +827,60 @@ La séparation des responsabilités permet de tester indépendamment :
 
 L'application est exposée via FastAPI.
 
-## Lancer l'API
+# Endpoints principaux
 
-Depuis la racine du projet :
+## `GET /`
+
+Endpoint de vérification de disponibilité de l'API.
 
 ```bash
-uv run uvicorn app.api:app --reload
+curl http://127.0.0.1:8000/
 ```
 
-L'API est alors disponible à :
+Réponse :
 
-```text
-http://127.0.0.1:8000
+```json
+{
+  "status": "ok"
+}
 ```
-
-La documentation Swagger interactive est disponible à :
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-La documentation ReDoc est disponible à :
-
-```text
-http://127.0.0.1:8000/redoc
-```
-
----
-
-# Endpoints principaux
 
 ## `POST /ask`
 
-Cet endpoint permet de poser une question au système RAG.
+Cet endpoint permet de poser une question au système RAG et de retourner la réponse générée ainsi que les documents récupérés avec leurs scores de similarité.
 
 Exemple :
 
 ```bash
 curl -X POST http://127.0.0.1:8000/ask \
   -H "Content-Type: application/json" \
-  -d "{\"question\":\"Quels concerts de jazz sont prévus ce week-end à Paris ?\"}"
+  -d '{"question":"Quels concerts de jazz sont prévus ce week-end à Paris ?"}'
 ```
 
-Le traitement est alors :
+La réponse de l'API contient :
 
-```text
-POST /ask
-
-    │
-    ▼
-Question utilisateur
-
-    │
-    ▼
-Query Parser
-
-    │
-    ▼
-Filtres metadata
-
-    │
-    ▼
-Pré-filtrage
-
-    │
-    ▼
-Embedding de la question complète
-
-    │
-    ▼
-FAISS
-
-    │
-    ▼
-Threshold
-
-    │
-    ▼
-TOP_K
-
-    │
-    ▼
-Documents
-
-    │
-    ▼
-Mistral Small
-
-    │
-    ▼
-Réponse
+```json
+{
+  "answer": "...",
+  "used_mistral": true,
+  "context": [
+    {
+      "score": 0.91,
+      "document": "..."
+    }
+  ]
+}
 ```
+
+Les scores sont donc disponibles au niveau de l'API, mais ils ne sont pas intégrés aux métadonnées des documents et ne sont pas transmis au LLM.
+
 
 ## `POST /rebuild`
 
-Cet endpoint permet de **reconstruire l'index du système RAG**.
+Cet endpoint permet de reconstruire l'index du système RAG à partir des données OpenAgenda.
 
-Il récupère les événements depuis l'API OpenAgenda, prépare les documents, génère leurs embeddings avec `mistral-embed`, puis reconstruit et sauvegarde l'index vectoriel FAISS ainsi que les métadonnées associées.
+La reconstruction récupère les événements, prépare les données, génère les embeddings avec `mistral-embed`, reconstruit et sauvegarde l'index FAISS et les métadonnées.
+
 
 Exemple :
 
@@ -1021,175 +888,92 @@ Exemple :
 curl -X POST http://127.0.0.1:8000/rebuild
 ```
 
-Le traitement est alors :
+Il est nécessaire de reconstruire l'index lorsque les données ou leur représentation changent.
 
-```text
-POST /rebuild
+Par exemple :
 
-    │
-    ▼
-API OpenAgenda
-
-    │
-    ▼
-Récupération des événements
-
-    │
-    ▼
-Préparation / normalisation des données
-
-    │
-    ▼
-Création des Documents
-
-    │
-    ▼
-mistral-embed
-
-    │
-    ▼
-Génération des embeddings
-
-    │
-    ▼
-Construction de l'index FAISS
-
-    │
-    ▼
-Sauvegarde de l'index
-et des métadonnées
-
-    │
-    ▼
-Index RAG mis à jour
-```
-
-> **Attention :** la reconstruction de l'index nécessite de recalculer les embeddings des événements et peut donc entraîner de nombreux appels à l'API Mistral.
+* nouveaux événements OpenAgenda ;
+* modification de la préparation du `page_content` ;
+* modification des métadonnées indexées ;
+* changement du modèle d'embedding ;
+* modification de la génération des embeddings.
 
 ## `POST /evaluate`
 
-L'endpoint `/evaluate` lance l'évaluation du système RAG avec **Ragas**.
+Endpoint qui lance l'évaluation du système RAG avec **Ragas**.
 
-À chaque appel, il :
+Exemple :
 
-1. charge le dataset de référence depuis [data/evaluation/rag_evaluation.json](data/evaluation/rag_evaluation.json),
-2. exécute le pipeline RAG complet sur chacune des questions du dataset,
-3. récupère la réponse générée ainsi que les contextes retrouvés,
-4. met à jour ces valeurs dans le JSON de référence,
-5. calcule les métriques d'évaluation.
+```bash
+curl -X POST http://127.0.0.1:8000/evaluate
+```
 
-Le jeu de données contient pour chaque exemple :
-
-* une question (`user_input`),
-* une référence attendue (`reference`),
-* les contextes de référence (`reference_contexts`),
-* la réponse calculée par le RAG (`response`),
-* les contextes récupérés (`retrieved_contexts`).
-
-Les métriques calculées sont notamment :
+L'évaluation exécute le système RAG sur le dataset de référence, récupère les réponses et les contextes, puis calcule les métriques :
 
 * **Faithfulness**
 * **Answer Relevancy**
 * **Context Precision**
 * **Context Recall**
 
-Exemple d'appel :
+La réponse de l'endpoint contient notamment les métriques moyennes, les scores obtenus pour chaque question et les résultats détaillés de l'évaluation.
 
-```bash
-curl -X POST http://127.0.0.1:8000/evaluate
-```
+L'évaluation peut prendre plusieurs minutes.
 
 ---
 
-# Reconstruction de l'index
+# Interface Streamlit
 
-L'index peut être reconstruit avec l'endpoint :
+L'interface contient notamment :
+1) Une page Chat de conversation avec le système RAG qui permet de :
+    * poser une question ;
+    * lancer `/ask` ;
+    * afficher la réponse généréé;
+    * afficher l'historique de conversation ;
 
-```text
-POST /rebuild
-```
-
-La reconstruction relance le pipeline d'indexation :
-
-```text
-Open Agenda
-     ↓
-Récupération des événements
-     ↓
-Normalisation
-     ↓
-Déduplication
-     ↓
-Création des Documents
-     ↓
-Mistral Embeddings
-     ↓
-FAISS
-     ↓
-Sauvegarde
-```
-
-Les principaux fichiers produits sont :
-
-```text
-data/faiss_index.bin
-data/metadata.json
-```
-
-## Quand faut-il reconstruire l'index ?
-
-Il est nécessaire de reconstruire l'index lorsque les données ou leur représentation changent.
-
-Par exemple :
-
-* nouveaux événements Open Agenda ;
-* modification de la préparation du `page_content` ;
-* modification des métadonnées indexées ;
-* changement du modèle d'embedding ;
-* modification de la méthode de génération des embeddings.
-
-En revanche, les modifications suivantes ne nécessitent généralement pas de reconstruire l'index :
-
-* modification du Query Parser ;
-* modification du retriever ;
-* modification du threshold ;
-* modification de `TOP_K` ;
-* modification de la logique du service RAG ;
-* modification des prompts de génération ;
-* modification des tests.
-
----
-
-# Évaluation avec Ragas
-
-Le projet contient une évaluation automatique du système RAG avec **Ragas**.
-
-Le dataset de référence se trouve dans :
-
-```text
-data/evaluation/rag_evaluation.json
-```
-
-Chaque exemple contient notamment :
-
-```json
-{
-  "user_input": "Quels événements sont proposés à Paris ?",
-  "reference": "..."
-}
-```
-
-Le fichier contient les questions et les réponses de référence.
-
-Les réponses générées et les contextes récupérés ne sont pas écrits manuellement dans le dataset.
-
-Ils sont produits par le véritable système RAG pendant l'évaluation.
+2) Une page d'évaluation qui permet de :
+    * lancer `/evaluate` ;
+    * afficher les métriques Ragas ;
+    * visualiser les résultats ;
+    * consulter les détails par question.
 
 ---
 
 # Pipeline d'évaluation
 
-Le processus est le suivant :
+Le projet contient une évaluation automatique du système RAG avec **Ragas**.
+
+Le dataset de référence se trouve dans `data/evaluation/rag_evaluation.json` et contient :
+
+```json
+{
+  "user_input": "Quels événements sont prévus prochainement à Paris ?",
+  "reference": "Voici 3 événements prévus prochainement à Paris : une exposition, ...",
+  "reference_doc_ids": [
+    "49229737"
+  ],
+  "reference_contexts": [
+    "Titre: De la sauvegarde à la conservation-restauration du patrimoine cinématographique\nDate: 2026-09-19\nLieu: Cinémathèque française\nVille: Paris"
+  ],
+  "response": "Voici les événements prévus prochainement à Paris : ...",
+  "retrieved_contexts": [
+    "..."
+  ]
+}
+```
+
+Les principaux champs sont :
+
+* `user_input` : **la question posée par l'utilisateur** au système RAG.
+* `reference` : **la réponse de référence attendue**, utilisée pour évaluer la réponse générée.
+* `reference_doc_ids` : **les identifiants des documents considérés comme pertinents pour répondre à la question**.
+* `reference_contexts` : **les contenus de référence associés aux documents pertinents**. Ils servent notamment à évaluer si le système a retrouvé les bons contextes.
+* `response` : **la réponse réellement générée par le système RAG**.
+* `retrieved_contexts` : **les documents réellement récupérés par le retriever** pour répondre à la question.
+
+Cela permet à Ragas de comparer **la question, la réponse générée et les contextes récupérés** avec les références attendues afin de calculer les différentes métriques d'évaluation.
+
+
+Le processus d'évaluation est le suivant :
 
 ```text
 rag_evaluation.json
@@ -1205,7 +989,7 @@ EventRAGService.answer()
         └── Documents récupérés
         │
         ▼
-Construction du EvaluationDataset
+Dataset Ragas
         │
         ▼
 Ragas
@@ -1223,7 +1007,7 @@ Scores d'évaluation
 
 ### Faithfulness
 
-Mesure dans quelle mesure la réponse générée est supportée par le contexte récupéré.
+Mesure dans quelle mesure la réponse générée est supportée par les contextes récupérés.
 
 ### Answer Relevancy
 
@@ -1239,29 +1023,9 @@ Mesure la pertinence de la réponse par rapport à la question utilisateur.
 
 ---
 
-# Lancer l'évaluation Ragas
-
-L'évaluation utilise les modèles Mistral et nécessite donc :
-
-```env
-MISTRAL_API_KEY=your_key_here
-```
-
-L'évaluation peut être lancée avec :
-
-```bash
-uv run python -m app.evaluation.ragas_evaluation
-```
-
-Le script construit alors le dataset Ragas à partir du véritable système RAG puis exécute les différentes métriques.
-
-Les appels Mistral utilisés pour l'évaluation sont donc de véritables appels externes.
-
----
-
 # Tests
 
-Le projet possède une suite de tests couvrant les principaux composants :
+Le projet possède une suite de tests couvrant notamment :
 
 * API FastAPI ;
 * chargement des données ;
@@ -1281,19 +1045,19 @@ Le projet possède une suite de tests couvrant les principaux composants :
 * `TOP_K` ;
 * absence de fallback lorsque les filtres explicites ne correspondent à aucun document ;
 * utilisation de la question complète pour la recherche sémantique ;
+* séparation des scores de retrieval et des `Document.metadata` ;
+* transmission des scores à l'API uniquement ;
 * service RAG ;
 * construction du dataset Ragas ;
 * orchestration de l'évaluation Ragas.
 
----
-
-# Mock des appels externes
+## Mock des appels externes
 
 Les tests unitaires ne doivent pas dépendre d'appels réels à l'API Mistral.
 
 Les composants externes sont donc mockés lorsque cela est nécessaire.
 
-Par exemple, les tests du Query Parser utilisent un LLM mocké et vérifient directement la sortie structurée :
+Par exemple, les tests du Query Parser utilisent un LLM mocké :
 
 ```text
 Question
@@ -1310,51 +1074,36 @@ Cela permet :
 * d'obtenir des tests déterministes ;
 * d'exécuter les tests sans connexion à Mistral.
 
-Le retriever utilise également des index et embeddings simulés afin de tester la logique de retrieval indépendamment du service Mistral.
+Le retriever utilise également des index et embeddings simulés afin de tester la logique de retrieval indépendamment de Mistral.
 
----
 
-# Lancer les tests
+## Lancer les tests
 
-Pour lancer toute la suite :
+Lancer toute la suite :
 
 ```bash
 uv run pytest -vv
 ```
 
-Pour lancer uniquement les tests du Query Parser :
+Lancer uniquement les tests du Query Parser :
 
 ```bash
 uv run pytest tests/test_query_parser.py -v
 ```
 
-Pour lancer uniquement les tests du retriever :
+Lancer uniquement les tests du retriever :
 
 ```bash
 uv run pytest tests/test_retriever.py -v
 ```
 
-Pour lancer uniquement les tests du service RAG :
+Lancer uniquement les tests du service RAG :
 
 ```bash
 uv run pytest tests/test_rag_service.py -v
 ```
 
----
-
-# Résultat actuel des tests
-
-La suite de tests actuelle contient **57 tests**, qui passent avec succès :
-
-```text
-57 passed
-```
-
-Un warning de dépréciation provenant de `Starlette` / `httpx` peut apparaître lors de l'exécution des tests, mais il ne correspond pas à une erreur du code applicatif.
-
----
-
-# Couverture des tests
+## Couverture des tests
 
 La couverture peut être calculée avec :
 
@@ -1370,150 +1119,13 @@ Le rapport indique :
 
 ---
 
-# Dépendances principales
-
-| Technologie     | Utilisation                                     |
-| --------------- | ----------------------------------------------- |
-| **Python 3.12** | Langage du projet                               |
-| **uv**          | Gestion de l'environnement et des dépendances   |
-| **Open Agenda** | Source des événements                           |
-| **Mistral AI**  | Embeddings et génération de texte               |
-| **FAISS**       | Recherche vectorielle                           |
-| **LangChain**   | Documents, retriever et orchestration RAG       |
-| **Pydantic**    | Validation et sortie structurée du Query Parser |
-| **FastAPI**     | API REST                                        |
-| **Uvicorn**     | Serveur ASGI                                    |
-| **Ragas**       | Évaluation automatique du RAG                   |
-| **pytest**      | Tests automatisés                               |
-
----
-
-# Choix d'architecture
-
-## Pourquoi utiliser un Query Parser ?
-
-Une question utilisateur peut contenir plusieurs types d'informations :
-
-```text
-Quels concerts de jazz sont prévus ce week-end à Paris pour les familles ?
-```
-
-Certaines informations sont sémantiques :
-
-```text
-concerts
-jazz
-familles
-```
-
-D'autres correspondent directement à des métadonnées :
-
-```text
-ce week-end
-Paris
-```
-
-Le Query Parser sépare ces deux types d'informations.
-
-```text
-Question complète
-       │
-       ├──────────────► Informations metadata
-       │                ├── dates
-       │                └── localisation
-       │
-       └──────────────► Informations sémantiques
-                        ├── type d'événement
-                        ├── thème
-                        └── préférences
-```
-
-Cela permet d'utiliser les métadonnées pour un filtrage précis tout en conservant toute la richesse sémantique de la question pour la recherche vectorielle.
-
----
-
-# Pourquoi filtrer les métadonnées avant FAISS ?
-
-FAISS effectue une recherche vectorielle mais ne gère pas directement les filtres métier arbitraires tels que :
-
-```text
-location_city = Paris
-date_from = 2026-09-05
-date_to = 2026-09-06
-```
-
-Le système applique donc :
-
-```text
-Métadonnées
-    ↓
-Filtrage
-    ↓
-Documents candidats
-    ↓
-FAISS
-```
-
-Cela permet de garantir qu'un document qui ne respecte pas un filtre explicite ne sera jamais récupéré par la recherche sémantique.
-
----
-
-# Pourquoi utiliser la question complète pour FAISS ?
-
-Le Query Parser n'est pas utilisé pour reformuler la requête sémantique.
-
-Par exemple :
-
-```text
-Quels concerts de jazz sont prévus ce week-end à Paris pour les familles ?
-```
-
-reste la requête envoyée au modèle d'embedding.
-
-Le Query Parser extrait seulement :
-
-```text
-date_from
-date_to
-location_city
-```
-
-La question complète conserve :
-
-```text
-concerts
-jazz
-familles
-```
-
-Ces informations sont importantes pour la recherche sémantique.
-
-Le pipeline est donc :
-
-```text
-Question complète
-      │
-      ├──────────────► Query Parser
-      │                     │
-      │                     ▼
-      │                 Metadata filters
-      │
-      │
-      └──────────────► Mistral Embedding
-                            │
-                            ▼
-                          FAISS
-```
-
----
-
 # Limites du POC
 
 Ce projet constitue un **POC (Proof of Concept)** et présente donc plusieurs limites.
 
 ## Données
 
-Les données dépendent de l'API publique Open Agenda.
+Les données dépendent de l'API publique OpenAgenda.
 
 La disponibilité, la qualité et la complétude des événements dépendent donc de la source externe.
 
@@ -1548,7 +1160,7 @@ Même avec une sortie structurée Pydantic, l'interprétation des formulations c
 
 ## Génération
 
-La qualité des réponses dépend :
+La qualité des réponses dépend notamment :
 
 * des documents disponibles ;
 * de la qualité des embeddings ;
@@ -1562,194 +1174,3 @@ Ragas utilise lui-même des modèles pour certaines métriques.
 
 Les scores obtenus doivent donc être considérés comme des indicateurs de qualité et non comme une vérité absolue.
 
----
-
-# Pipeline complet
-
-Le fonctionnement complet du projet peut être résumé ainsi :
-
-```text
-                         OFFLINE / INDEXATION
-                         ====================
-
-                         Open Agenda API
-                                │
-                                ▼
-                           Data Loader
-                                │
-                                ▼
-                         Normalisation
-                                │
-                                ▼
-                         Déduplication
-                                │
-                                ▼
-                          Documents
-                                │
-                                ▼
-                       Mistral Embeddings
-                         mistral-embed
-                                │
-                                ▼
-                             FAISS
-                                │
-                                ▼
-                    faiss_index.bin + metadata.json
-
-
-                          ONLINE / RAG
-                         ============
-
-                       Question utilisateur
-                                │
-                                ▼
-                         Query Parser
-                                │
-                                ▼
-                     EventSearchQuery
-                                │
-                                ▼
-                       Metadata filters
-                                │
-                                ▼
-                     Documents candidats
-                                │
-                                │
-                 Question complète
-                                │
-                                ▼
-                       Mistral Embedding
-                                │
-                                ▼
-                              FAISS
-                                │
-                                ▼
-                    Similarity Threshold
-                                │
-                                ▼
-                              TOP_K
-                                │
-                                ▼
-                      Documents pertinents
-                                │
-                                ▼
-                       Mistral Small
-                    mistral-small-latest
-                                │
-                                ▼
-                         Réponse finale
-
-
-                         ÉVALUATION
-                         ==========
-
-                     Dataset de référence
-                                │
-                                ▼
-                       Système RAG réel
-                                │
-                                ├── Réponse
-                                │
-                                └── Contextes
-                                │
-                                ▼
-                           Ragas
-                                │
-                 ┌──────────────┼──────────────┐
-                 ▼              ▼              ▼
-            Faithfulness   Answer Relevancy   Context
-                                              Precision /
-                                              Recall
-                                │
-                                ▼
-                         Scores d'évaluation
-```
-
----
-
-# Résumé
-
-Ce projet met en œuvre une chaîne RAG complète à partir d'événements Open Agenda :
-
-```text
-Open Agenda
-     ↓
-Data Loader
-     ↓
-Normalisation / Déduplication
-     ↓
-Documents LangChain
-     ↓
-Mistral Embeddings
-     ↓
-FAISS
-     ↓
-     ┌─────────────────────────────────┐
-     │                                 │
-     │        Question utilisateur     │
-     │                 │               │
-     │                 ▼               │
-     │          Query Parser           │
-     │                 │               │
-     │                 ▼               │
-     │        Metadata filters         │
-     │                 │               │
-     │                 ▼               │
-     │       Documents candidats       │
-     │                 │               │
-     │                 ▼               │
-     │    Embedding question complète  │
-     │                 │               │
-     │                 ▼               │
-     │               FAISS             │
-     │                 │               │
-     │                 ▼               │
-     │          Threshold + TOP_K      │
-     │                 │               │
-     │                 ▼               │
-     │        Documents pertinents     │
-     │                                 │
-     └────────────────┬────────────────┘
-                      │
-                      ▼
-                Mistral LLM
-                      │
-                      ▼
-                Réponse finale
-                      │
-                      ▼
-                    Ragas
-                      │
-                      ▼
-                Évaluation RAG
-```
-
-L'architecture sépare clairement les différentes responsabilités :
-
-```text
-Data Loader
-    → acquisition et préparation des données
-
-Indexer
-    → documents + embeddings + FAISS
-
-Query Parser
-    → extraction des contraintes metadata
-
-Retriever
-    → filtrage metadata + recherche vectorielle
-
-RAG Service
-    → orchestration du retrieval et de la génération
-
-FastAPI
-    → exposition du système
-
-Ragas
-    → évaluation
-
-pytest
-    → validation automatisée
-```
-
-Cette séparation permet de construire un système RAG **modulaire, testable et évolutif**, tout en conservant une architecture suffisamment simple pour analyser individuellement chaque étape du pipeline.
